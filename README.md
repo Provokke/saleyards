@@ -4,13 +4,13 @@
 
 A cross-server marketplace for Roblox: fixed-price listings and timed auctions, with escrow designed to survive a server dying at any write (proven against Lune fakes). It leaves out item art, unique items with their own data and anything a player does with what they buy. Player data is saved with a session lease, the same store as [satchel](https://github.com/Provokke/satchel).
 
-![Licence](https://img.shields.io/badge/LICENCE-MIT-blue?style=for-the-badge)  ![Language](https://img.shields.io/badge/LUAU-00A2FF?style=for-the-badge&logo=roblox&logoColor=white)  ![Tests](https://img.shields.io/badge/TESTS-297-brightgreen?style=for-the-badge)
+![Licence](https://img.shields.io/badge/LICENCE-MIT-blue?style=for-the-badge)  ![Language](https://img.shields.io/badge/LUAU-00A2FF?style=for-the-badge&logo=roblox&logoColor=white)  ![Tests](https://img.shields.io/badge/TESTS-302-brightgreen?style=for-the-badge)
 
 Refer to [LICENSE](LICENSE) for the legal bits.
 
 </div>
 
-![ALT-TODO market.gif](docs/media/market.gif)
+![Listing two Fleeces, buying ten Milk Cans, placing a bid on an auction and a payout notice saying three Hay Bales sold for 108 Coins](docs/media/market.gif)
 
 ## What's in it
 
@@ -19,7 +19,7 @@ Refer to [LICENSE](LICENSE) for the legal bits.
 - **Claims, not a mailbox.** What a player has staked in a listing is a claim in their own profile. A listing claim holds the items and the fee, a buy claim holds the price, a bid claim holds the bid. Settlement reads the listing and resolves the claim, and a claim is removed only in the same profile save that applies its result. A profile holds up to `MaxOpenClaims` (10) at once.
 - **Server-priced money.** A listing costs a flat `ListingFee` (5 Coins), kept by the yards once the listing exists and returned only if it never went on sale. A sale pays the seller the price less `floor(price × SaleTax)`, 10% by default. Whole Coins only, and the client never sends a price it can't be held to: a buy sends the price it saw and is refused if the listing has changed.
 - **Settlement that can be repeated.** On join, once straight after each call and every `SettleSeconds` (30) for players holding claims, each claim is decided from the listing key by a pure function (`Settle.decide`). Every step is safe to run again, so a crash at any point just means the next settle decides from the same facts.
-- **Browsing is a cache.** Open listings sit in two MemoryStore sorted maps, one by price and one by end time, and the Browse call returns one page of `BrowsePageSize` (20). Losing the maps loses no Coin or item.
+- **Browsing is a cache.** Open listings sit in two MemoryStore sorted maps (in-memory ones in Studio), one by price and one by end time, and the Browse call returns one page of `BrowsePageSize` (20). Losing the maps loses no Coin or item.
 - **Server authority.** Clients send intent only (`list`, `buy`, `bid`, `cancel` or a Browse page). Every call is checked for type and range, rate limited per player and then checked against the rules. A bad call is dropped and counted. A call the rules refuse changes nothing and the player gets the reason in the next Sync, which also carries Coins, items, claims and new notices. A call dropped because the player's last one is still running is answered `busy`.
 - **Market board.** Three tabs (Browse, Sell and Mine) over the Coins HUD, with a toast for each settled sale, refund or win.
 
@@ -69,9 +69,9 @@ To use the real DataStore, set the attribute `SaleyardsUseDataStore` to true on 
 
 | The yard | The gate |
 |---|---|
-| ![ALT-TODO saleyards.jpg](docs/media/saleyards.jpg) | ![ALT-TODO gate.jpg](docs/media/gate.jpg) |
+| ![The whole saleyards from above: the entry gateway, stock pens, a stock truck and the covered sale ring on a dry hillside](docs/media/saleyards.jpg) | ![The green SALEYARDS gateway at the start of the lane, with a ute, a stock truck and the pens and sale ring ahead](docs/media/gate.jpg) |
 | **The sale ring** | **The sale board** |
-| ![ALT-TODO ring.jpg](docs/media/ring.jpg) | ![ALT-TODO board.jpg](docs/media/board.jpg) |
+| ![The sandy sale ring from the timber seats, with the sale board and the yard office at the far end](docs/media/ring.jpg) | ![The market window open by the sale board, with a saddle auction showing a high bid of 15 Coins among fleece, hay bale and milk can lots](docs/media/board.jpg) |
 
 - The scene is a low-detail stylised backdrop with primitive trees and vehicles, checked in Studio lighting.
 - Studio runs one server, so the demo can't show a cross-server sale. The seeded payout is minted for the demo and is not part of the conservation claim. Coming back after a rejoin isn't shown either: an in-memory store forgets everything when the play test stops. The specs cover both.
@@ -123,6 +123,7 @@ src/
       Profile.luau     what a new profile holds, and how it is encoded for storage
       Store.luau       loads, saves and releases sessions over a DataStore
       MemoryStore.luau in-memory stand-in with the same UpdateAsync contract, used in Studio
+      MemorySortedMap.luau in-memory stand-in for the browse cache, used in Studio
   shared/
     Config.luau        items, fee, tax, limits, timings: the one place to edit
     ConfigCheck.luau   refuses to start the server on a bad config
@@ -148,7 +149,7 @@ The tools are pinned in `rokit.toml`: Rojo 7.4.4, Lune 0.8.9, StyLua 2.0.2 and S
 
 To change what can be sold, or the fee, tax and limits, edit `Config.luau`. The server refuses to start on a bad config.
 
-In Studio the server uses an in-memory store, so nothing is saved between plays. To use the real DataStore, set the attribute `SaleyardsUseDataStore` to true on ServerStorage and turn on API access for the place. To fill the market with listings in Studio, set `SaleyardsDemoSeed` to true on ServerStorage.
+In Studio the server uses an in-memory store and in-memory sorted maps, so the place runs unpublished and nothing is saved between plays. To use the real DataStore, set the attribute `SaleyardsUseDataStore` to true on ServerStorage and turn on API access for the place. To fill the market with listings in Studio, set `SaleyardsDemoSeed` to true on ServerStorage.
 
 The checks CI runs:
 
@@ -168,7 +169,7 @@ rojo build -o build/saleyards.rbxl
 lune run tests/run
 ```
 
-297 tests, all passing:
+302 tests, all passing:
 
 - Listing (14) and Listing fuzz (1): every transition and every refusal, `close` ending a listing at its end time and writing nothing else, void never changing a sale or a bid, and seeded random action sequences keeping the invariant that a listing ends with at most one buyer or one winning bid and never leaves a final state.
 - Settle (18): every row of the decision table, including the void-then-read-again branches, a bid that wins after the end even if its id was voided, another seller's listing under our id, a buyId or bidId that matches another user, and `needsClose`.
@@ -182,12 +183,12 @@ lune run tests/run
 - Handlers (12): bad arguments dropped with no market call, range edges, a refusal passed on with its reason, a market call that throws (logged once), a second call dropped and answered `busy`, the rate limit and its refill, and Browse paging and bad arguments.
 - Server script (10): the real `init.server.luau`, run over a small stand-in for the Roblox services it uses (`tests/fakes/FakeGame.luau`). A bad config refuses to start, a joining player is synced, a join settles held claims, a list and a buy go through the remotes and the seller is paid by the poll, bad requests are dropped, a leave and BindToClose wait for a running call (and no longer than the timeout), and a rejoin on a restarted server keeps the claim.
 - Index (3): paging by price and by ending, entries that expire at their end and can be removed, and a failure that is logged and never raised.
-- Demo seed (5): six sellers and one auction ending in 90 seconds, every listing one `Listing.create` would make, no duplicates or second payout when seeded twice, and the entry script seeding only in Studio with the attribute and in-memory stores.
-- Board logic (9): grouped Coins, time left, the next bid, the tax floor, when cancel is allowed, each draft check, and plain words for every reason the server gives.
+- Demo seed (6): six sellers and one auction ending in 90 seconds, every listing one `Listing.create` would make, no duplicates or second payout when seeded twice, the entry script seeding only in Studio with the attribute and in-memory stores, and an unpublished place, where MemoryStoreService refuses, starting, seeding and browsing.
+- Board logic (10): grouped Coins, time left, the price a browse row shows, the next bid, the tax floor, when cancel is allowed, each draft check, and plain words for every reason the server gives.
 - Config checks (12): the shipped config passes, and each rule fails when broken and passes when fixed.
 - Lease (13): new, taken, stolen and held outcomes, expiry, refresh, release, lost leases, records with no lease, a release that already landed, and no mutation of the stored record.
 - Migrations (5): steps run in order, current records are unchanged, records from the future go read-only, the input is never mutated, and a missing step names the schema.
-- Fake data store (5), Fake sorted map (5) and Memory store (3): the fakes re-run transforms on fresh copies, can fail after writing and cancel on nil, the sorted map orders and pages like Roblox's and expires entries, and the in-memory store copies in and out.
+- Fake data store (5), Fake sorted map (5), Memory store (3) and Memory sorted map (3): the fakes re-run transforms on fresh copies, can fail after writing and cancel on nil, the sorted maps order and page like Roblox's and expire entries, and the in-memory stores copy in and out.
 - Store (11), Store leases (8), Store loads (8) and Store saves (5): fresh loads, two-server lockout, stealing an expired lease, load retries, persistent failure, read-only saves and releases, leases that landed but errored, long release outages, loads called off when the player leaves, and an older autosave that can't land after a newer save.
 - Sessions (9) and Sessions saveNow (6): a quick rejoin waiting for the old release, a rejoin during a slow load, shutdown within its timeout, read-only and lost sessions, and `saveNow` true only when the write landed and false for no session, a failed write, a lost lease or a read-only session.
 - Profile (6): starting Coins and items, a separate copy of the starting items for each profile, every field kept through encode and decode, bad data refused, and the first migration.
@@ -195,7 +196,7 @@ lune run tests/run
 
 Every race and crash spec has a negative control: a deliberately broken version that must fail it.
 
-**Mutation runner.** `lune run tests/mutate` applies each of the 18 patches in `tests/mutants` to a throwaway copy of `src` and `tests`, runs the full suite there and requires a failure. The mutants break one behaviour each: no write-ahead save, a refund without voiding first, a claim that isn't removed, a pay without the buyer check, a buy that ignores state, a bid that ignores the end, no busy lock, a time-final listing decided without a close write, a cancel without a claim, a call that settles every claim, a save not bound to the profile, a stake into a dead session, a stale browse entry kept, and a foreign listing marked. A mutant that survives, or whose find text no longer matches (stale), or that breaks the build, fails the run. `lune run tests/mutate -- --self-check` proves the runner itself: a harmless mutant must be reported as surviving, a stale one as stale and a build-breaking one as broken. Currently 18 killed, none surviving.
+**Mutation runner.** `lune run tests/mutate` applies each of the 19 patches in `tests/mutants` to a throwaway copy of `src` and `tests`, runs the full suite there and requires a failure. The mutants break one behaviour each: no write-ahead save, a refund without voiding first, a claim that isn't removed, a pay without the buyer check, a buy that ignores state, a bid that ignores the end, no busy lock, a time-final listing decided without a close write, a cancel without a claim, a call that settles every claim, a save not bound to the profile, a stake into a dead session, a stale browse entry kept, a foreign listing marked, and a Studio browse cache that needs a published place. A mutant that survives, or whose find text no longer matches (stale), or that breaks the build, fails the run. `lune run tests/mutate -- --self-check` proves the runner itself: a harmless mutant must be reported as surviving, a stale one as stale and a build-breaking one as broken. Currently 19 killed, none surviving.
 
 The client script and the UI can't run under Lune. They build with Rojo and are checked in Studio. The stand-in the server script runs on models only the members it uses, but it is not Roblox. The runner counts a test that yields and never finishes as a failure, so a hung test can't end the run with no output.
 
