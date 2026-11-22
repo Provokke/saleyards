@@ -1,6 +1,8 @@
 --!strict
 -- The fake is what every store test stands on, so its UpdateAsync behaviour is checked here.
+local FakeClock = require("../fakes/FakeClock")
 local FakeDataStore = require("../fakes/FakeDataStore")
+local Faults = require("../fakes/Faults")
 
 return {
 	{
@@ -78,6 +80,33 @@ return {
 				return nil
 			end)
 			assert(records.k.n == 2 and ds.runs == 1, "cancelled at once, the other write stands")
+		end,
+	},
+	{
+		name = "a lost write does not refresh the read cache: the client never saw the response",
+		run = function()
+			local clock = FakeClock.new(1000)
+			local ds = FakeDataStore.new()
+			local faults = Faults.new()
+			local h = ds:handle(faults, { cacheSeconds = 4, clock = clock })
+			h:UpdateAsync("a", function()
+				return { n = 1 }
+			end)
+			assert(h:GetAsync("a").n == 1)
+			faults:arm(1, "lost")
+			pcall(function()
+				h:UpdateAsync("a", function()
+					return { n = 2 }
+				end)
+			end)
+			assert(ds.records.a.n == 2, "the lost write landed")
+			assert(h:GetAsync("a").n == 1, "the cache must still hold what the client last saw")
+			clock:advance(5)
+			assert(h:GetAsync("a").n == 2)
+			h:UpdateAsync("a", function()
+				return { n = 3 }
+			end)
+			assert(h:GetAsync("a").n == 3, "a write that returns refreshes the cache")
 		end,
 	},
 }

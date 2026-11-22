@@ -127,7 +127,8 @@ export type HandleOptions = {
 -- every call raises CRASH once the server is dead. Handles built on one store share its records.
 -- With `options.cacheSeconds` the handle also keeps a read cache like Roblox's: a GetAsync within
 -- that many seconds of the handle's read of a key returns the value it read then, and a write
--- through the same handle replaces the cached value with the one written. Off by default.
+-- through the same handle replaces the cached value with the one written, unless the response
+-- was lost. Off by default.
 function FakeDataStore.handle(self: FakeDataStore, faults: Faults.Faults, options: HandleOptions?): Handle
 	local cacheSeconds = if options then options.cacheSeconds else nil
 	local clock = if options then options.clock else nil
@@ -140,7 +141,8 @@ function FakeDataStore.handle(self: FakeDataStore, faults: Faults.Faults, option
 	function handle.UpdateAsync(_: any, key: string, transform: (any) -> any): any
 		local mode = faults:beforeWrite()
 		local result = self:UpdateAsync(key, transform)
-		if cacheSeconds ~= nil and result ~= nil then
+		-- A lost response never reached the client, so its cache cannot hold what the write wrote.
+		if cacheSeconds ~= nil and result ~= nil and mode ~= "lost" then
 			cache[key] = { value = Deep.copy(result), at = cacheNow() }
 		end
 		if mode == "lost" then

@@ -205,4 +205,43 @@ return {
 			assert(restarted:get(7).coins == 50, "no caching across a restart")
 		end,
 	},
+	{
+		name = "a fail armed at write 2 raises before applying it, leaves the server alive, and fires once",
+		run = function()
+			local ds = FakeDataStore.new()
+			local faults = Faults.new()
+			local h = ds:handle(faults)
+			faults:arm(2, "fail")
+			h:UpdateAsync("a", put(1))
+			assert(string.find(
+				raised(function()
+					h:UpdateAsync("b", put(2))
+				end),
+				"request failed",
+				1,
+				true
+			))
+			assert(ds.records.b == nil, "a failed request never reached the store")
+			assert(not faults.dead and faults.target == nil)
+			h:UpdateAsync("b", put(3))
+			assert(ds.records.b.n == 3 and faults.writes == 3)
+		end,
+	},
+	{
+		name = "armPair loses two writes: both land, both raise, the server carries on",
+		run = function()
+			local ds = FakeDataStore.new()
+			local faults = Faults.new()
+			local h = ds:handle(faults)
+			faults:armPair(1, 3)
+			for i, key in { "a", "b", "c", "d" } do
+				local ok = pcall(function()
+					h:UpdateAsync(key, put(i))
+				end)
+				assert(ok == (i == 2 or i == 4), `write {i} raised wrongly`)
+			end
+			assert(ds.records.a.n == 1 and ds.records.c.n == 3, "a lost write still lands")
+			assert(not faults.dead and next(faults.also) == nil)
+		end,
+	},
 }
