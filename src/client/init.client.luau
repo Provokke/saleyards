@@ -176,7 +176,7 @@ sync.OnClientEvent:Connect(function(view: any)
 		for i = first, #view.notices do
 			local notice = view.notices[i]
 			if type(notice) == "table" and type(notice.text) == "string" then
-				toast(BoardLogic.noticeText(notice.text, Config.Items), Theme.accent)
+				toast(notice.text, Theme.accent)
 			end
 		end
 	end

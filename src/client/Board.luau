@@ -12,6 +12,7 @@ type Entry = {
 	kind: string,
 	price: number?,
 	startBid: number?,
+	high: number?,
 	endsAt: number,
 	seller: number,
 }
@@ -218,7 +219,7 @@ local function drawBrowse(self: Board)
 			sub ..= ", yours"
 		end
 		local row = baseRow(self, self.browseList, order, entry.itemId, entry.qty, sub)
-		local amount = if entry.kind == "auction" then entry.startBid or 0 else entry.price or 0
+		local amount = if entry.kind == "auction" then entry.high or entry.startBid or 0 else entry.price or 0
 		local price = bold(theme.label(row, logic.coins(amount), 15, theme.coin), theme)
 		price.Position = UDim2.fromOffset(238, 9)
 		price.Size = UDim2.fromOffset(130, 20)
@@ -248,7 +249,13 @@ local function drawBrowse(self: Board)
 			theme.setEnabled(bid, canAct, theme.accent)
 			local box = theme.input(
 				row,
-				tostring(logic.minNextBid(entry.startBid or 0, self.bidHint[entry.id], config.MinIncrement)),
+				tostring(
+					logic.minNextBid(
+						entry.startBid or 0,
+						math.max(entry.high or 0, self.bidHint[entry.id] or 0),
+						config.MinIncrement
+					)
+				),
 				"Bid"
 			)
 			box.AnchorPoint = Vector2.new(1, 0.5)

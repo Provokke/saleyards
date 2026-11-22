@@ -165,41 +165,4 @@ function BoardLogic.resultText(action: string, ok: boolean, reason: string?): st
 	return BoardLogic.reasonText(reason)
 end
 
-local function itemName(items: Items, id: string): string
-	local item = items[id]
-	if item ~= nil then
-		return item.name
-	end
-	return (string.gsub(id, "_", " "))
-end
-
-local function withQty(qty: number, name: string): string
-	if qty > 1 then
-		return `{qty} x {name}`
-	end
-	return name
-end
-
--- The server's notice text carries item ids ("Sold 1 x hay_bale for 45 Coins after tax"). This
--- turns the four notice shapes into what a player would say. Anything else is shown as sent.
-function BoardLogic.noticeText(text: string, items: Items): string
-	local qty, id, coins = string.match(text, "^Sold (%d+) x ([%w_]+) for (%d+) Coins after tax$")
-	if qty ~= nil then
-		return `Your {withQty(tonumber(qty) :: number, itemName(items, id))} sold for {coins} Coins`
-	end
-	qty, id = string.match(text, "^(%d+) x ([%w_]+) returned$")
-	if qty ~= nil then
-		return `Your {withQty(tonumber(qty) :: number, itemName(items, id))} didn't sell and is back in your items`
-	end
-	qty, id = string.match(text, "^Won (%d+) x ([%w_]+)$")
-	if qty ~= nil then
-		return `You won {withQty(tonumber(qty) :: number, itemName(items, id))}`
-	end
-	coins = string.match(text, "^Refunded (%d+) Coins$")
-	if coins ~= nil then
-		return `{coins} Coins refunded`
-	end
-	return text
-end
-
 return BoardLogic

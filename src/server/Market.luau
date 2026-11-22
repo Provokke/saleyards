@@ -123,23 +123,32 @@ function Market.new(deps: Deps): Market
 	end
 
 	-- One in-memory change with no yield: Coins and items, the claim removed, a notice.
+	-- "Hay Bale", or "3 Hay Bales", for a notice.
+	local function itemWords(claim: Claim): string
+		local item = config.Items[claim.itemId]
+		local name = if item then item.name else claim.itemId
+		return if claim.qty == 1 then name else `{claim.qty} {name}s`
+	end
+
 	local function applyOutcome(profile: Profile, claim: Claim, outcome: any)
 		local text = ""
 		if outcome.action == "pay" then
 			profile.coins += outcome.coins
-			text = `Sold {claim.qty} x {claim.itemId} for {outcome.coins} Coins after tax`
+			text = `Your {itemWords(claim)} sold for {outcome.coins} Coins`
 		elseif outcome.action == "return_item" then
 			profile.items[claim.itemId] = (profile.items[claim.itemId] or 0) + claim.qty
 			if outcome.refundFee then
 				profile.coins += claim.fee or 0
 			end
-			text = `{claim.qty} x {claim.itemId} returned`
+			text = `Your {itemWords(claim)} came back to you`
 		elseif outcome.action == "give_item" then
 			profile.items[claim.itemId] = (profile.items[claim.itemId] or 0) + claim.qty
-			text = `Won {claim.qty} x {claim.itemId}`
+			text = if claim.kind == "bid"
+				then `You won {itemWords(claim)}`
+				else `You bought {itemWords(claim)}`
 		else -- refund
 			profile.coins += outcome.coins
-			text = `Refunded {outcome.coins} Coins`
+			text = `{outcome.coins} Coins came back to you`
 		end
 		profile.claims[claim.id] = nil
 		if profile.notices == nil then
@@ -236,7 +245,9 @@ function Market.new(deps: Deps): Market
 			end
 			if outcome.action == "keep" then
 				actions[claim.id] = "keep"
-				if claim.kind == "listing" then
+				-- The seller's open listing, or the auction this bid leads, goes back in the browse
+				-- cache from the fresh read, which also carries the current high bid.
+				if claim.kind == "listing" or claim.kind == "bid" then
 					index:add(listing)
 				end
 			elseif outcome.action == "void_then_decide" then

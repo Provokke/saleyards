@@ -146,26 +146,4 @@ return {
 			assert(BoardLogic.resultText("buy", false, "pending") == BoardLogic.reasonText("pending"))
 		end,
 	},
-	{
-		name = "noticeText names items and drops the codes",
-		run = function()
-			local items = Config.Items
-			assert(
-				BoardLogic.noticeText("Sold 1 x hay_bale for 45 Coins after tax", items)
-					== "Your Hay Bale sold for 45 Coins"
-			)
-			assert(
-				BoardLogic.noticeText("Sold 3 x milk_can for 90 Coins after tax", items)
-					== "Your 3 x Milk Can sold for 90 Coins"
-			)
-			assert(
-				BoardLogic.noticeText("2 x fleece returned", items)
-					== "Your 2 x Fleece didn't sell and is back in your items"
-			)
-			assert(BoardLogic.noticeText("Won 1 x saddle", items) == "You won Saddle")
-			assert(BoardLogic.noticeText("Refunded 60 Coins", items) == "60 Coins refunded")
-			assert(BoardLogic.noticeText("Won 1 x mystery_thing", items) == "You won mystery thing")
-			assert(BoardLogic.noticeText("Something else", items) == "Something else")
-		end,
-	},
 }

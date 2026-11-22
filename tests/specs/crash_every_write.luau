@@ -518,11 +518,12 @@ table.insert(specs, {
 		local seller = walk(byName("list, buy,"), opts)
 		assert(cleanRunPassed(seller), describe(seller))
 		assert(failedAt(seller, 6, "lost", COINS_OR_ITEMS), describe(seller))
-		-- The winning bid is refunded.
+		-- The winning bid is refunded. Write 10 is the second bid: the first bid's settle puts the
+		-- auction back in the browse cache (two index writes) before it.
 		for _, prefix in { "auction, two bids, ends, settle 1 2 3", "auction, two bids, ends, settle 3 2 1" } do
 			local auctionWalk = walk(byName(prefix), opts)
 			assert(cleanRunPassed(auctionWalk), describe(auctionWalk))
-			assert(failedAt(auctionWalk, 8, "lost", COINS_OR_ITEMS), describe(auctionWalk))
+			assert(failedAt(auctionWalk, 10, "lost", COINS_OR_ITEMS), describe(auctionWalk))
 		end
 		-- Without the cache the lost write is read back and the control passes: the cache is what
 		-- lets the walk see a write that landed unseen.
@@ -540,7 +541,7 @@ table.insert(specs, {
 		assert(failedAt(buy, 6, "lost", COINS_OR_ITEMS, 7), describe(buy))
 		local auctionWalk = walkPairs(byName("auction, two bids, ends, settle 1 2 3"), opts)
 		assert(cleanRunPassed(auctionWalk), describe(auctionWalk))
-		assert(failedAt(auctionWalk, 8, "lost", COINS_OR_ITEMS, 9), describe(auctionWalk))
+		assert(failedAt(auctionWalk, 10, "lost", COINS_OR_ITEMS, 11), describe(auctionWalk))
 	end,
 })
 

@@ -16,6 +16,7 @@ export type Entry = {
 	kind: string,
 	price: number?,
 	startBid: number?,
+	high: number?, -- the current high bid, as of the read that added the entry
 	endsAt: number,
 	seller: number,
 }
@@ -54,10 +55,11 @@ function Index.new(
 				kind = l.kind,
 				price = l.price,
 				startBid = l.startBid,
+				high = if l.high then l.high.amount else nil,
 				endsAt = l.endsAt,
 				seller = l.seller,
 			}
-			byPrice:SetAsync(l.id, entry, expiration, l.price or l.startBid)
+			byPrice:SetAsync(l.id, entry, expiration, l.price or entry.high or l.startBid)
 			byEnding:SetAsync(l.id, entry, expiration, l.endsAt)
 		end)
 		if not ok then

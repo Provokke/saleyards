@@ -482,4 +482,42 @@ return {
 			assert(applied == 0 and saved == true)
 		end,
 	},
+	{
+		name = "notices are in plain words with item names, never item ids",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			assert(r.market:buy(2, id, 40) == true)
+			assert(r.market:settle(1) == 1)
+			local sold = p(r, 1).notices[#p(r, 1).notices].text
+			local bought = p(r, 2).notices[#p(r, 2).notices].text
+			local listing = r.records["listing/" .. id]
+			local name = Config.Items[listing.itemId].name
+			assert(string.find(sold, "sold for 36 Coins", 1, true) and string.find(sold, name, 1, true), sold)
+			assert(string.sub(bought, 1, 11) == "You bought " and string.find(bought, name, 1, true), bought)
+			for _, text in { sold, bought } do
+				assert(not string.find(text, listing.itemId, 1, true), `item id shown: {text}`)
+			end
+		end,
+	},
+	{
+		name = "a landed bid puts the current high bid in the browse cache",
+		run = function()
+			local r = rig()
+			local id = listed(r, "auction", 20)
+			local function entry(): any
+				for _, item in r.byPrice:GetRangeAsync("Ascending", 10) do
+					if item.key == id then
+						return item
+					end
+				end
+				return nil
+			end
+			assert(entry() ~= nil and entry().value.high == nil, "no bid yet")
+			assert(r.market:bid(2, id, 20) == true)
+			assert(entry().value.high == 20 and entry().sortKey == 20)
+			assert(r.market:bid(3, id, 25) == true)
+			assert(entry().value.high == 25 and entry().sortKey == 25, "the price sort follows the high bid")
+		end,
+	},
 }
