@@ -144,4 +144,20 @@ return {
 			assert(noAttribute:lastSync(7).coins == 500, "off without the attribute")
 		end,
 	},
+	{
+		name = "an unpublished Studio place starts, seeds and browses with in-memory sorted maps",
+		run = function()
+			local world =
+				FakeGame.new({ studio = true, unpublished = true, attributes = { SaleyardsDemoSeed = true } })
+			world:start()
+			assert(world.started == true, world.startError)
+			world:join(7)
+			world.sched:advance(1)
+			assert(world:lastSync(7).coins == 500 + 108, `{world:lastSync(7).coins} coins: the seed paid out`)
+			local page = world:browse(7, "price")
+			assert(page ~= nil and #page.entries > 0, "the seeded listings are in the browse page")
+			assert(#world:browse(7, "ending").entries > 0)
+			assert(#world.errors == 0, world.errors[1])
+		end,
+	},
 }

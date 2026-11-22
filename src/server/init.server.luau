@@ -22,6 +22,7 @@ local Lease = require(script.Data.Lease)
 local Listing = require(script.Listing)
 local Market = require(script.Market)
 local MemoryStore = require(script.Data.MemoryStore)
+local MemorySortedMap = require(script.Data.MemorySortedMap)
 local Migrations = require(script.Data.Migrations)
 local Profile = require(script.Data.Profile)
 local Sessions = require(script.Sessions)
@@ -91,14 +92,18 @@ local store = Store.new({
 	log = log,
 })
 
--- The browse cache. Always the real MemoryStore: it works in Studio, and Index only logs a failure.
-local index = Index.new(
-	MemoryStoreService:GetSortedMap(Config.IndexByPrice),
-	MemoryStoreService:GetSortedMap(Config.IndexByEnding),
-	os.time,
-	log,
-	Enum.SortDirection.Ascending
-)
+-- The browse cache. It follows the data stores: the real MemoryStore with the real data stores,
+-- and in-memory maps in Studio otherwise, as an unpublished place can't reach MemoryStoreService.
+local byPrice: any
+local byEnding: any
+if useRealStore then
+	byPrice = MemoryStoreService:GetSortedMap(Config.IndexByPrice)
+	byEnding = MemoryStoreService:GetSortedMap(Config.IndexByEnding)
+else
+	byPrice = MemorySortedMap.new(os.time)
+	byEnding = MemorySortedMap.new(os.time)
+end
+local index = Index.new(byPrice, byEnding, os.time, log, Enum.SortDirection.Ascending)
 
 -- Remotes. Request is client to server (intent only), Sync is server to client, Browse is a
 -- request for one page of the open listings.

@@ -26,6 +26,7 @@ local SHARED: { [string]: any } = {
 local DATA: { [string]: any } = {
 	Lease = require("../../src/server/Data/Lease"),
 	MemoryStore = require("../../src/server/Data/MemoryStore"),
+	MemorySortedMap = require("../../src/server/Data/MemorySortedMap"),
 	Migrations = require("../../src/server/Data/Migrations"),
 	Profile = require("../../src/server/Data/Profile"),
 	Steps = require("../../src/server/Data/Steps"),
@@ -55,6 +56,7 @@ export type Options = {
 	start: number?, -- the clock's starting time
 	records: any?, -- an existing store to start over, as a restarted server would
 	studio: boolean?, -- RunService:IsStudio() answers this (default false)
+	unpublished: boolean?, -- a place never published: MemoryStoreService refuses, as Studio does
 	attributes: { [string]: any }?, -- ServerStorage attributes
 	server: string?, -- names this server: its JobId and the prefix of its GUIDs, so two servers over one store differ
 }
@@ -197,6 +199,9 @@ function FakeGame.new(options: Options?): any
 		}),
 		MemoryStoreService = strict("MemoryStoreService", {
 			GetSortedMap = function(_, name: string)
+				if opts.unpublished then
+					error("You must publish this place to use MemoryStoreService")
+				end
 				local map = world.maps[name]
 				if map == nil then
 					map = FakeSortedMap.new(world.clock)
