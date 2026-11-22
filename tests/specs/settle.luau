@@ -93,8 +93,9 @@ local function bidClaim(id: string, amount: number): Claim
 	}
 end
 
+-- The fixtures belong to user 1 (the seller) and user 2 (the buyer or bidder).
 local function decide(c: Claim, l: Listing?, now: number): SettleModule.Outcome
-	return Settle.decide(c, l, now, TAX)
+	return Settle.decide(c, l, now, TAX, if c.kind == "listing" then 1 else 2)
 end
 
 -- Applies the void the outcome asked for, as the caller would, and returns the listing it left.
@@ -248,6 +249,68 @@ return {
 				end
 			end
 			assert(checked > 0)
+		end,
+	},
+	{
+		name = "listing claim: another seller's listing under our id is returned with the fee, no write",
+		run = function()
+			local c = listingClaim("L1")
+			-- Control: the owner's open listing keeps, the owner's sold listing pays.
+			assert(Settle.decide(c, fixed(40), 10, TAX, 1).action == "keep")
+			assert(Settle.decide(c, sold(40), 10, TAX, 1).action == "pay")
+			for _, other in { fixed(40), sold(40), cancelled() } do
+				local o = Settle.decide(c, other, 10, TAX, 3)
+				assert(o.action == "return_item" and o.refundFee == true, "paid or kept for a stranger")
+			end
+			-- The id on the listing is not ours either.
+			local elsewhere = listingClaim("L9")
+			local o = Settle.decide(elsewhere, fixed(40), 10, TAX, 1)
+			assert(o.action == "return_item" and o.refundFee == true)
+		end,
+	},
+	{
+		name = "buy claim: a buyId match for another user is not ours and goes through the void",
+		run = function()
+			local c = buyClaim("b1")
+			assert(Settle.decide(c, sold(40), 10, TAX, 2).action == "give_item")
+			assert(Settle.decide(c, sold(40), 10, TAX, 3).action == "void_then_decide")
+			local after = Settle.decide(c, applyVoid(c, sold(40)), 10, TAX, 3)
+			assert(after.action == "refund" and after.coins == 40)
+		end,
+	},
+	{
+		name = "bid claim: a bidId match for another user is not ours, final or not",
+		run = function()
+			local c = bidClaim("d1", 50)
+			local l = bidded("d1", 50)
+			assert(Settle.decide(c, l, 10, TAX, 2).action == "keep")
+			assert(Settle.decide(c, l, 1000, TAX, 2).action == "give_item")
+			assert(Settle.decide(c, l, 10, TAX, 3).action == "void_then_decide")
+			assert(Settle.decide(c, l, 1000, TAX, 3).action == "void_then_decide")
+			assert(Settle.decide(c, applyVoid(c, l), 1000, TAX, 3).action == "refund")
+		end,
+	},
+	{
+		name = "needsClose: only our own listing or our own high bid, open and past its end",
+		run = function()
+			local function need(c: Claim, l: Listing?, now: number, user: number): boolean
+				return Settle.needsClose(c, l, now, user)
+			end
+			local lc = listingClaim("L1")
+			assert(need(lc, fixed(40), 1000, 1) == true)
+			assert(need(lc, fixed(40), 999, 1) == false)
+			assert(need(lc, fixed(40), 1000, 3) == false)
+			assert(need(lc, nil, 1000, 1) == false)
+			assert(need(lc, sold(40), 1000, 1) == false)
+			assert(need(lc, cancelled(), 1000, 1) == false)
+			local ended = must(Listing.close(fixed(40), 1000))
+			assert(need(lc, ended, 2000, 1) == false)
+			local bc = bidClaim("d1", 50)
+			assert(need(bc, bidded("d1", 50), 1000, 2) == true)
+			assert(need(bc, bidded("d1", 50), 999, 2) == false)
+			assert(need(bc, bidded("d1", 50), 1000, 3) == false)
+			assert(need(bc, bidded("other", 50), 1000, 2) == false)
+			assert(need(buyClaim("b1"), fixed(40), 1000, 2) == false)
 		end,
 	},
 }

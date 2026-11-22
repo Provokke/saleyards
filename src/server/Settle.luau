@@ -33,11 +33,23 @@ export type Outcome = {
 
 local Settle = {}
 
-local function decideListing(Listing: ListingLib, listing: Listing?, now: number, saleTax: number): Outcome
+local function decideListing(
+	Listing: ListingLib,
+	claim: Claim,
+	listing: Listing?,
+	now: number,
+	saleTax: number,
+	userId: number
+): Outcome
 	if listing == nil then
 		return { action = "void_then_decide" }
 	end
 	if listing.state == "void" then
+		return { action = "return_item", refundFee = true }
+	end
+	-- Someone else's listing under our id: our create was refused because the id was taken, so
+	-- ours never went on sale and never can. Give everything back and write nothing.
+	if listing.seller ~= userId or listing.id ~= claim.listingId then
 		return { action = "return_item", refundFee = true }
 	end
 	if not Listing.final(listing, now) then
@@ -50,8 +62,13 @@ local function decideListing(Listing: ListingLib, listing: Listing?, now: number
 	return { action = "return_item", refundFee = false }
 end
 
-local function decideBuy(claim: Claim, listing: Listing?): Outcome
-	if listing ~= nil and listing.buyer ~= nil and listing.buyer.buyId == claim.id then
+local function decideBuy(claim: Claim, listing: Listing?, userId: number): Outcome
+	if
+		listing ~= nil
+		and listing.buyer ~= nil
+		and listing.buyer.buyId == claim.id
+		and listing.buyer.userId == userId
+	then
 		return { action = "give_item" }
 	end
 	if listing == nil or not listing.voided[claim.id] then
@@ -60,10 +77,16 @@ local function decideBuy(claim: Claim, listing: Listing?): Outcome
 	return { action = "refund", coins = claim.amount }
 end
 
-local function decideBid(Listing: ListingLib, claim: Claim, listing: Listing?, now: number): Outcome
+local function decideBid(
+	Listing: ListingLib,
+	claim: Claim,
+	listing: Listing?,
+	now: number,
+	userId: number
+): Outcome
 	if listing ~= nil then
 		local high = listing.high
-		if high ~= nil and high.bidId == claim.id then
+		if high ~= nil and high.bidId == claim.id and high.userId == userId then
 			if Listing.final(listing, now) then
 				return { action = "give_item" }
 			end
@@ -77,18 +100,39 @@ local function decideBid(Listing: ListingLib, claim: Claim, listing: Listing?, n
 end
 
 export type Settler = {
-	decide: (claim: Claim, listing: Listing?, now: number, saleTax: number) -> Outcome,
+	decide: (claim: Claim, listing: Listing?, now: number, saleTax: number, userId: number) -> Outcome,
+	-- True when the claim's own listing is final only because the clock passed endsAt (still stored
+	-- as open). Market writes Listing.close for it before acting on the decision.
+	needsClose: (claim: Claim, listing: Listing?, now: number, userId: number) -> boolean,
 }
 
 function Settle.new(Listing: ListingLib): Settler
 	return {
-		decide = function(claim: Claim, listing: Listing?, now: number, saleTax: number): Outcome
+		decide = function(
+			claim: Claim,
+			listing: Listing?,
+			now: number,
+			saleTax: number,
+			userId: number
+		): Outcome
 			if claim.kind == "listing" then
-				return decideListing(Listing, listing, now, saleTax)
+				return decideListing(Listing, claim, listing, now, saleTax, userId)
 			elseif claim.kind == "buy" then
-				return decideBuy(claim, listing)
+				return decideBuy(claim, listing, userId)
 			end
-			return decideBid(Listing, claim, listing, now)
+			return decideBid(Listing, claim, listing, now, userId)
+		end,
+		needsClose = function(claim: Claim, listing: Listing?, now: number, userId: number): boolean
+			if listing == nil or listing.state ~= "open" or now < listing.endsAt then
+				return false
+			end
+			if claim.kind == "listing" then
+				return listing.seller == userId and listing.id == claim.listingId
+			elseif claim.kind == "bid" then
+				local high = listing.high
+				return high ~= nil and high.bidId == claim.id and high.userId == userId
+			end
+			return false
 		end,
 	}
 end

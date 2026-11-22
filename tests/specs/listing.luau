@@ -92,6 +92,11 @@ local function voidAs(id: string, voidId: string): (Listing?) -> (Listing?, stri
 	end
 end
 
+-- An auction with user 2 high at 20.
+local function bidAs_ok(l: Listing): Listing
+	return ok(l, bidAs(2, "d1", 20, 10))
+end
+
 return {
 	{
 		name = "create builds an open listing from nil",
@@ -260,6 +265,59 @@ return {
 			assert(Listing.saleAmount(auction(), 1000) == nil)
 			local tomb = Listing.void(nil, "x", "y")
 			assert(tomb and Listing.final(tomb, 0) and Listing.saleAmount(tomb, 10) == nil)
+		end,
+	},
+	{
+		name = "close ends a listing at its end time and writes nothing else",
+		run = function()
+			local f = fixed()
+			local out = ok(f, function(l)
+				return Listing.close(l, 1000)
+			end)
+			assert(out.state == "ended" and out.id == f.id and out.endsAt == f.endsAt and out.seller == 1)
+			assert(out.buyer == nil and out.high == nil and out.settled.seller == false)
+			local a = ok(bidAs_ok(auction()), function(l)
+				return Listing.close(l, 5000)
+			end)
+			assert(a.state == "ended" and a.high ~= nil and a.high.amount == 20)
+		end,
+	},
+	{
+		name = "close refuses a missing, early or already final listing",
+		run = function()
+			local function close(now: number)
+				return function(l: Listing?)
+					return Listing.close(l, now)
+				end
+			end
+			refused(nil, "missing", close(1000))
+			refused(fixed(), "not_ended", close(999))
+			refused(ok(fixed(), buyAs(2, "b1", 40, 10)), "not_open", close(2000))
+			refused(ok(fixed(), cancelAs(1, 10)), "not_open", close(2000))
+			local tomb = Listing.void(nil, "x", "y")
+			refused(tomb, "not_open", close(2000))
+			-- Closing its own output refuses: an ended listing is final and nothing is written twice.
+			local ended = ok(fixed(), close(1000))
+			refused(ended, "not_open", close(2000))
+		end,
+	},
+	{
+		name = "an ended listing is final, pays a high bid, and refuses buy, bid and cancel",
+		run = function()
+			local ended = ok(auction(), function(l)
+				return Listing.close(l, 1000)
+			end)
+			assert(Listing.final(ended, 0) and Listing.saleAmount(ended, 0) == nil)
+			local withBid = ok(bidAs_ok(auction()), function(l)
+				return Listing.close(l, 1000)
+			end)
+			assert(Listing.final(withBid, 0) and Listing.saleAmount(withBid, 0) == 20)
+			refused(withBid, "not_open", bidAs(3, "d2", 40, 10))
+			refused(withBid, "not_open", cancelAs(1, 10))
+			local fixedEnded = ok(fixed(), function(l)
+				return Listing.close(l, 1000)
+			end)
+			refused(fixedEnded, "not_open", buyAs(2, "b1", 40, 10))
 		end,
 	},
 }

@@ -112,24 +112,53 @@ end
 
 export type Handle = {
 	UpdateAsync: (self: Handle, key: string, transform: (any) -> any) -> any,
-	GetAsync: (self: Handle, key: string) -> any,
+	GetAsync: (self: Handle, key: string, options: any?) -> any,
+}
+
+export type HandleOptions = {
+	-- Real GetAsync serves a key from a local cache for this many seconds after the first read.
+	cacheSeconds: number?,
+	-- The clock that cache runs on: the simulated server's own, so a skewed server caches by its time.
+	clock: { now: (any) -> number }?,
 }
 
 -- One simulated server's view of this store. Every UpdateAsync counts as a write on `faults`
 -- (a "stop" raises before the call reaches the store; a "lost" applies it and then raises) and
 -- every call raises CRASH once the server is dead. Handles built on one store share its records.
-function FakeDataStore.handle(self: FakeDataStore, faults: Faults.Faults): Handle
+-- With `options.cacheSeconds` the handle also keeps a read cache like Roblox's: a GetAsync within
+-- that many seconds of the handle's read of a key returns the value it read then, and a write
+-- through the same handle replaces the cached value with the one written. Off by default.
+function FakeDataStore.handle(self: FakeDataStore, faults: Faults.Faults, options: HandleOptions?): Handle
+	local cacheSeconds = if options then options.cacheSeconds else nil
+	local clock = if options then options.clock else nil
+	local cache: { [string]: { value: any, at: number } } = {}
+	local function cacheNow(): number
+		assert(clock ~= nil, "a read cache needs a clock")
+		return clock:now()
+	end
 	local handle = {}
 	function handle.UpdateAsync(_: any, key: string, transform: (any) -> any): any
 		local mode = faults:beforeWrite()
 		local result = self:UpdateAsync(key, transform)
+		if cacheSeconds ~= nil and result ~= nil then
+			cache[key] = { value = Deep.copy(result), at = cacheNow() }
+		end
 		if mode == "lost" then
 			Faults.lose()
 		end
 		return result
 	end
-	function handle.GetAsync(_: any, key: string): any
+	function handle.GetAsync(_: any, key: string, getOptions: any?): any
 		faults:beforeRead()
+		if cacheSeconds ~= nil and not (getOptions ~= nil and getOptions.UseCache == false) then
+			local hit = cache[key]
+			if hit ~= nil and cacheNow() - hit.at < cacheSeconds then
+				return Deep.copy(hit.value)
+			end
+			local value = Deep.copy(self.records[key])
+			cache[key] = { value = Deep.copy(value), at = cacheNow() }
+			return value
+		end
 		return Deep.copy(self.records[key])
 	end
 	return handle :: Handle

@@ -12,7 +12,7 @@ export type Listing = {
 	startBid: number?,
 	fee: number,
 	endsAt: number,
-	state: "open" | "sold" | "cancelled" | "void",
+	state: "open" | "sold" | "cancelled" | "ended" | "void",
 	high: { userId: number, bidId: string, amount: number }?,
 	buyer: { userId: number, buyId: string }?,
 	voided: { [string]: boolean },
@@ -229,6 +229,24 @@ function Listing.cancel(current: Listing?, seller: number, now: number): (Listin
 	end
 	local out = copy(current)
 	out.state = "cancelled"
+	return out, nil
+end
+
+-- Makes an end by the clock a stored fact. A listing that is only final because the clock passed
+-- endsAt can still be written by a server whose clock is behind, or read stale. Writing "ended"
+-- first means every later write refuses it, so the decision made from the written value holds.
+function Listing.close(current: Listing?, now: number): (Listing?, string?)
+	if current == nil then
+		return nil, "missing"
+	end
+	if current.state ~= "open" then
+		return nil, "not_open"
+	end
+	if now < current.endsAt then
+		return nil, "not_ended"
+	end
+	local out = copy(current)
+	out.state = "ended"
 	return out, nil
 end
 

@@ -11,7 +11,7 @@ local Market = require("../../src/server/Market")
 local Settle = require("../../src/server/Settle")
 local TestProfiles = require("../fakes/TestProfiles")
 
-local function rig(): any
+local function rig(settler: any?): any
 	local r: any = { records = {}, logs = {}, failSave = false, failGet = false }
 	r.store = FakeDataStore.new(r.records)
 	r.faults = Faults.new()
@@ -24,7 +24,13 @@ local function rig(): any
 	r.profiles = profiles
 	r.byPrice = FakeSortedMap.new(r.clock)
 	r.byEnding = FakeSortedMap.new(r.clock)
-	r.index = Index.new(r.byPrice:handle(r.faults), r.byEnding:handle(r.faults), now, function() end)
+	r.indexFaults = Faults.new() -- the index has its own faults, so a dead store does not take it down
+	r.index = Index.new(
+		r.byPrice:handle(r.indexFaults),
+		r.byEnding:handle(r.indexFaults),
+		now,
+		function() end
+	)
 	local n = 0
 	r.market = Market.new({
 		listings = handle,
@@ -37,6 +43,9 @@ local function rig(): any
 				return profiles:get(userId)
 			end,
 			save = function(userId: number): boolean
+				if r.onSave then
+					r.onSave()
+				end
 				if r.failSave then
 					return false
 				end
@@ -53,7 +62,7 @@ local function rig(): any
 		end,
 		config = Config,
 		Listing = Listing,
-		settler = Settle.new(Listing),
+		settler = settler or Settle.new(Listing),
 	})
 	return r
 end
@@ -319,6 +328,158 @@ return {
 			r.faults.dead = true
 			assert(r.market:settle(1) == 0)
 			assert(p(r, 1).claims[id] ~= nil and p(r, 1).items.hay_bale == 4)
+		end,
+	},
+	{
+		name = "list returns pending, not an id, while its claim is held with no decision",
+		run = function()
+			local r = rig()
+			r.faults:arm(2, "stop") -- the create never lands and the server is dead for the fallback settle
+			local id, err = r.market:list(1, "hay_bale", 2, "fixed", 40, 1)
+			assert(id == nil and err == "pending", err)
+			assert(p(r, 1).claims["G1"] ~= nil)
+			assert(r.records["listing/G1"] == nil)
+		end,
+	},
+	{
+		name = "cancel reports success when the write landed but its answer was lost",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			r.faults:arm(1, "lost")
+			local ok, err = r.market:cancel(1, id)
+			assert(ok == true, err)
+			assert(r.records["listing/" .. id].state == "cancelled")
+			assert(p(r, 1).items.hay_bale == 6 and count(p(r, 1).claims) == 0)
+		end,
+	},
+	{
+		name = "cancel and a sale take the listing out of the browse index",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			assert(#r.index:page("price", nil, 5).entries == 1)
+			assert(r.market:cancel(1, id) == true)
+			assert(#r.index:page("price", nil, 5).entries == 0)
+			local sold = listed(r, "fixed", 40)
+			assert(#r.index:page("price", nil, 5).entries == 1)
+			assert(r.market:buy(2, sold, 40) == true)
+			assert(
+				#r.index:page("price", nil, 5).entries == 1,
+				"the sale alone does not apply the seller's claim"
+			)
+			assert(r.market:settle(1) == 1)
+			assert(#r.index:page("price", nil, 5).entries == 0)
+		end,
+	},
+	{
+		name = "a landed cancel leaves the browse index even when settling cannot read the listing",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			r.store:hookNext(function()
+				r.faults.dead = true -- the cancel lands, then the settle's read raises
+			end)
+			assert(r.market:cancel(1, id) == true)
+			assert(count(p(r, 1).claims) == 1, "the settle should not have run")
+			assert(#r.index:page("price", nil, 5).entries == 0)
+		end,
+	},
+	{
+		name = "buy that landed but cannot be read back is pending, and the item arrives at the next settle",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			r.store:hookNext(function() end) -- the stake's profile save
+			r.store:hookNext(function()
+				r.faults.dead = true -- the buy lands, then every read raises
+			end)
+			local ok, err = r.market:buy(2, id, 40)
+			assert(ok == nil and err == "pending", err)
+			assert(r.records["listing/" .. id].state == "sold" and count(p(r, 2).claims) == 1)
+			r.faults.dead = false
+			assert(r.market:settle(2) == 1)
+			assert(p(r, 2).items.hay_bale == 8 and p(r, 2).coins == 460)
+		end,
+	},
+	{
+		name = "bid that landed but cannot be read back is pending, not a refusal",
+		run = function()
+			local r = rig()
+			local id = listed(r, "auction", 20)
+			r.store:hookNext(function() end)
+			r.store:hookNext(function()
+				r.faults.dead = true
+			end)
+			local ok, err = r.market:bid(2, id, 20)
+			assert(ok == nil and err == "pending", err)
+			assert(r.records["listing/" .. id].high.userId == 2)
+			r.faults.dead = false
+			assert(r.market:settle(2) == 0 and count(p(r, 2).claims) == 1)
+		end,
+	},
+	{
+		name = "a failed list save puts the items back relative to what changed during the save",
+		run = function()
+			local r = rig()
+			r.failSave = true
+			r.onSave = function()
+				p(r, 1).items.hay_bale += 10 -- a reward granted while the save yields
+			end
+			local id, err = r.market:list(1, "hay_bale", 2, "fixed", 40, 1)
+			assert(id == nil and err == "save_failed")
+			assert(p(r, 1).items.hay_bale == 16 and p(r, 1).coins == 500 and count(p(r, 1).claims) == 0)
+		end,
+	},
+	{
+		name = "a failed stake write is logged",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			r.faults:arm(2, "stop") -- write 1 is the stake's save, write 2 is the buy
+			assert(r.market:buy(2, id, 40) == nil)
+			local found = false
+			for _, line in r.logs do
+				if string.find(line, "stake write failed", 1, true) then
+					found = true
+				end
+			end
+			assert(found, "no log line for the failed stake write")
+		end,
+	},
+	{
+		name = "an error inside the decision raises out of settle and frees the lock",
+		run = function()
+			local real = Settle.new(Listing)
+			local boom: any = {
+				decide = function(): any
+					error("decide bug")
+				end,
+				needsClose = real.needsClose,
+			}
+			local r = rig(boom)
+			listed(r, "fixed", 40)
+			local ok, err = pcall(r.market.settle, r.market, 1)
+			assert(not ok and string.find(tostring(err), "decide bug", 1, true) ~= nil)
+			assert(not r.market:busy(1) and count(p(r, 1).claims) == 1)
+		end,
+	},
+	{
+		name = "settle returns whether the profile saved",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			assert(r.market:buy(2, id, 40) == true)
+			r.failSave = true
+			local applied, saved = r.market:settle(1)
+			assert(applied == 1 and saved == false)
+			r.failSave = false
+			local second = listed(r, "fixed", 40)
+			assert(r.market:buy(2, second, 40) == true)
+			applied, saved = r.market:settle(1)
+			assert(applied == 1 and saved == true)
+			applied, saved = r.market:settle(1)
+			assert(applied == 0 and saved == true)
 		end,
 	},
 }

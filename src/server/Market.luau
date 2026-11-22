@@ -7,10 +7,13 @@
 --   buy     P (Coins and a buy claim taken)           ->  L buy     ->  S
 --   bid     P (Coins and a bid claim taken)           ->  L bid     ->  S
 --   cancel  L cancel (nothing is staked)              ->  S
---   settle  per claim: read the listing, then L void if the decision asks for it, then apply the
---           outcome in memory (no yield, claim removed in the same change); one P at the end,
---           then L markSettled for listing claims, best effort. A listing claim that is still
---           on sale goes back into the index and applies nothing.
+--   settle  per claim: read the listing, then L void if the decision asks for it, then L close
+--           if the listing is final only because the clock passed endsAt (a read can be stale and
+--           another server's clock can be behind, so the end is written before it is acted on, and
+--           the decision is made again from the written value), then apply the outcome in memory
+--           (no yield, claim removed in the same change); one P at the end, then L markSettled for
+--           listing claims and I remove, both best effort. A listing claim that is still on sale
+--           goes back into the index and applies nothing.
 -- A failed P stops the operation and undoes the in-memory change. A failed or lost L never rolls
 -- back: the claim stays and settle resolves it. Listings are only written by Listing transforms.
 -- A per-user lock covers every public call and is released on every path.
@@ -35,19 +38,22 @@ export type Profile = {
 
 export type StoreLike = {
 	UpdateAsync: (self: any, key: string, transform: (any) -> any) -> any,
-	GetAsync: (self: any, key: string) -> any,
+	GetAsync: (self: any, key: string, options: any?) -> any,
 }
 
 export type Deps = {
 	listings: StoreLike,
-	index: any,
+	index: { add: (self: any, listing: any) -> (), remove: (self: any, id: string) -> () },
 	profiles: { get: (userId: number) -> Profile?, save: (userId: number) -> boolean },
 	now: () -> number,
 	guid: () -> string,
 	log: (string) -> (),
 	config: any,
 	Listing: any,
-	settler: { decide: (claim: any, listing: any, now: number, saleTax: number) -> any },
+	settler: {
+		decide: (claim: any, listing: any, now: number, saleTax: number, userId: number) -> any,
+		needsClose: (claim: any, listing: any, now: number, userId: number) -> boolean,
+	},
 }
 
 export type Market = {
@@ -64,7 +70,10 @@ export type Market = {
 	buy: (self: Market, userId: number, listingId: string, price: number) -> (boolean?, string?),
 	bid: (self: Market, userId: number, listingId: string, amount: number) -> (boolean?, string?),
 	cancel: (self: Market, userId: number, listingId: string) -> (boolean?, string?),
-	settle: (self: Market, userId: number) -> (number?, string?),
+	-- Returns how many claims were applied, then whether the profile is saved: true, false when the
+	-- save failed (true when nothing needed saving). While another call holds the user's lock it
+	-- returns nil, "busy" instead.
+	settle: (self: Market, userId: number) -> (number?, boolean | string | nil),
 }
 
 local Market = {}
@@ -107,6 +116,12 @@ function Market.new(deps: Deps): Market
 		return a, b
 	end
 
+	-- Saves the profile, treating a raise as a failed save.
+	local function saveProfile(userId: number): boolean
+		local ok, saved = pcall(profiles.save, userId)
+		return ok and saved == true
+	end
+
 	-- One in-memory change with no yield: Coins and items, the claim removed, a notice.
 	local function applyOutcome(profile: Profile, claim: Claim, outcome: any)
 		local text = ""
@@ -136,28 +151,69 @@ function Market.new(deps: Deps): Market
 		end
 	end
 
-	-- Reads the listing and decides, voiding first when asked. Raises on a failed read or void.
-	local function decide(claim: Claim): (any, any)
+	-- Reads the listing and decides, voiding first when asked, then closing a listing that is final
+	-- only by the clock. Returns the outcome, the listing it was decided from and nil, or nil, nil
+	-- and the error when a store call failed. Only the store calls are protected: a raise from the
+	-- decision itself is a bug and goes up.
+	local function decide(claim: Claim, userId: number): (any, any, string?)
 		local key = keyOf(claim.listingId)
-		local listing = listings:GetAsync(key)
-		local outcome = settler.decide(claim, listing, now(), config.SaleTax)
-		if outcome.action == "void_then_decide" then
-			listing = listings:UpdateAsync(key, function(current: any)
-				local new = Listing.void(current, claim.listingId, claim.id)
-				return new
-			end)
-			outcome = settler.decide(claim, listing, now(), config.SaleTax)
+		local readOk, listing = pcall(function()
+			return listings:GetAsync(key)
+		end)
+		if not readOk then
+			return nil, nil, tostring(listing)
 		end
-		return outcome, listing
+		local at = now()
+		local outcome = settler.decide(claim, listing, at, config.SaleTax, userId)
+		if outcome.action == "void_then_decide" then
+			local voidOk, voided = pcall(function()
+				return listings:UpdateAsync(key, function(current: any)
+					local new = Listing.void(current, claim.listingId, claim.id)
+					return new
+				end)
+			end)
+			if not voidOk then
+				return nil, nil, tostring(voided)
+			end
+			listing = voided
+			outcome = settler.decide(claim, listing, at, config.SaleTax, userId)
+		end
+		if settler.needsClose(claim, listing, at, userId) then
+			local seen: any = nil
+			local refusal: string? = nil
+			local closeOk, closed = pcall(function()
+				return listings:UpdateAsync(key, function(current: any)
+					seen, refusal = current, nil
+					local new, reason = Listing.close(current, at)
+					refusal = reason
+					return new
+				end)
+			end)
+			if not closeOk then
+				return nil, nil, tostring(closed)
+			end
+			if refusal == nil then
+				listing = closed
+			elseif refusal == "not_open" then
+				-- Already final (sold, cancelled, ended): decide from what the transform saw.
+				listing = seen
+			else
+				-- This server's clock is behind the stored end: it is not final here yet.
+				return { action = "keep" }, listing, nil
+			end
+			outcome = settler.decide(claim, listing, at, config.SaleTax, userId)
+		end
+		return outcome, listing, nil
 	end
 
-	-- Settles every claim of one user. The caller holds the lock. Returns how many were applied and
-	-- the action each claim ended with.
-	local function settleClaims(userId: number): (number, { [string]: string })
+	-- Settles every claim of one user. The caller holds the lock. Returns how many were applied, the
+	-- action each decided claim ended with (a claim with no entry is still held) and whether the
+	-- profile is saved (true when nothing needed saving).
+	local function settleClaims(userId: number): (number, { [string]: string }, boolean)
 		local actions: { [string]: string } = {}
 		local profile = profiles.get(userId)
 		if profile == nil then
-			return 0, actions
+			return 0, actions, true
 		end
 		local ordered: { Claim } = {}
 		for _, claim in profile.claims do
@@ -172,10 +228,10 @@ function Market.new(deps: Deps): Market
 		local applied = 0
 		local settledListings: { string } = {}
 		for _, claim in ordered do
-			-- A raise while reading or voiding leaves the claim where it is and moves on.
-			local ok, outcome, listing = pcall(decide, claim)
-			if not ok then
-				log("settle skipped " .. claim.id .. ": " .. tostring(outcome))
+			-- A failed store call leaves the claim where it is and moves on.
+			local outcome, listing, err = decide(claim, userId)
+			if outcome == nil then
+				log("settle skipped " .. claim.id .. ": " .. tostring(err))
 				continue
 			end
 			if outcome.action == "keep" then
@@ -194,10 +250,17 @@ function Market.new(deps: Deps): Market
 				end
 			end
 		end
+		local saved = true
 		if applied > 0 then
-			local saved, savedOk = pcall(profiles.save, userId)
-			if saved and savedOk == true then
+			saved = saveProfile(userId)
+			if saved then
 				for _, listingId in settledListings do
+					local removed, removeErr = pcall(function()
+						index:remove(listingId)
+					end)
+					if not removed then
+						log("index remove failed: " .. tostring(removeErr))
+					end
 					local marked, err = pcall(function()
 						listings:UpdateAsync(keyOf(listingId), function(current: any)
 							local new = Listing.markSettled(current, "seller")
@@ -212,23 +275,17 @@ function Market.new(deps: Deps): Market
 				log("settle save failed for " .. tostring(userId))
 			end
 		end
-		return applied, actions
-	end
-
-	-- Saves the profile, treating a raise as a failed save.
-	local function saveProfile(userId: number): boolean
-		local ok, saved = pcall(profiles.save, userId)
-		return ok and saved == true
+		return applied, actions, saved
 	end
 
 	function self.busy(_: Market, userId: number): boolean
 		return locks[userId] == true
 	end
 
-	function self.settle(_: Market, userId: number): (number?, string?)
+	function self.settle(_: Market, userId: number): (number?, boolean | string | nil)
 		return locked(userId, function()
-			local applied = settleClaims(userId)
-			return applied, nil
+			local applied, _, saved = settleClaims(userId)
+			return applied, saved
 		end)
 	end
 
@@ -290,12 +347,11 @@ function Market.new(deps: Deps): Market
 				at = at,
 			}
 			-- Write-ahead: take the item and the fee and record the claim, then save.
-			local priorItems = profile.items[itemId]
 			profile.items[itemId] = if have - qty > 0 then have - qty else nil
 			profile.coins -= fee
 			profile.claims[listingId] = claim
 			if not saveProfile(userId) then
-				profile.items[itemId] = priorItems
+				profile.items[itemId] = (profile.items[itemId] or 0) + qty
 				profile.coins += fee
 				profile.claims[listingId] = nil
 				return nil, "save_failed"
@@ -326,9 +382,12 @@ function Market.new(deps: Deps): Market
 				return listingId, nil
 			end
 			-- Raised or refused: the claim stays and settlement decides from the listing key.
-			settleClaims(userId)
-			if profile.claims[listingId] ~= nil then
+			local _, actions = settleClaims(userId)
+			if actions[listingId] == "keep" then
 				return listingId, nil
+			end
+			if profile.claims[listingId] ~= nil then
+				return nil, "pending"
 			end
 			return nil, "not_listed"
 		end)
@@ -387,7 +446,7 @@ function Market.new(deps: Deps): Market
 		end
 
 		local refusal: string? = nil
-		pcall(function()
+		local wrote, writeErr = pcall(function()
 			listings:UpdateAsync(keyOf(listingId), function(cur: any)
 				refusal = nil
 				local new, reason = transform(cur, claimId)
@@ -395,6 +454,9 @@ function Market.new(deps: Deps): Market
 				return new
 			end)
 		end)
+		if not wrote then
+			log("stake write failed for " .. claimId .. ": " .. tostring(writeErr))
+		end
 		local _, actions = settleClaims(userId)
 		return nil, refusal, claimId, actions
 	end
@@ -416,13 +478,16 @@ function Market.new(deps: Deps): Market
 			if actions[claimId] == "give_item" then
 				return true, nil
 			end
+			if actions[claimId] == nil then
+				return nil, "pending" -- the claim is held and settles later
+			end
 			return false, reason or "not_bought"
 		end)
 	end
 
 	function self.bid(_: Market, userId: number, listingId: string, amount: number): (boolean?, string?)
 		return locked(userId, function()
-			local early, reason, claimId = stake(
+			local early, reason, claimId, actions = stake(
 				userId,
 				listingId,
 				"bid",
@@ -431,14 +496,15 @@ function Market.new(deps: Deps): Market
 					return Listing.bid(cur, userId, id, amount, config.MinIncrement, now())
 				end
 			)
-			if claimId == nil then
+			if claimId == nil or actions == nil then
 				return early, reason
 			end
-			local ok, listing = pcall(function()
-				return listings:GetAsync(keyOf(listingId))
-			end)
-			if ok and listing ~= nil and listing.high ~= nil and listing.high.bidId == claimId then
+			local action = actions[claimId]
+			if action == "keep" or action == "give_item" then
 				return true, nil
+			end
+			if action == nil then
+				return nil, "pending" -- the claim is held and settles later
 			end
 			return false, reason or "not_bid"
 		end)
@@ -455,8 +521,14 @@ function Market.new(deps: Deps): Market
 					return new
 				end)
 			end)
-			settleClaims(userId)
-			if ok and refusal == nil then
+			local _, actions = settleClaims(userId)
+			if actions[listingId] == "return_item" or (ok and refusal == nil) then
+				local removed, removeErr = pcall(function()
+					index:remove(listingId)
+				end)
+				if not removed then
+					log("index remove failed: " .. tostring(removeErr))
+				end
 				return true, nil
 			end
 			return false, refusal or "not_cancelled"
