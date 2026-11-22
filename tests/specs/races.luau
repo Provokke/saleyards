@@ -271,4 +271,105 @@ table.insert(specs, {
 	end,
 })
 
+-- One user, two calls at once on one server. User 2 is outbid, so its bid claim is to be refunded;
+-- the poll loop and a join (or an operation's own settle) both settle user 2 while the first is
+-- parked at its void write. The per-user lock has to turn the second away: with two Markets
+-- standing in for "no lock", user 2 is refunded twice.
+local function sameUserSettles(unguarded: boolean): (Result, { any })
+	local w = World.new()
+	local a = w:server("A")
+	local id = assert(a.market:list(1, "fleece", 1, "auction", 20, 1))
+	assert(a.market:bid(2, id, 20) == true)
+	assert(a.market:bid(3, id, 30) == true)
+	local sched = FakeScheduler.new(w.clock)
+	local parked = 0
+	a.gate = function()
+		parked += 1
+		sched:wait(1)
+	end
+	local other = if unguarded then a.newMarket() else a.market
+	local answers: { any } = {}
+	sched:spawn(function()
+		answers[1] = { a.market:settle(2) }
+	end)
+	sched:spawn(function()
+		answers[2] = { other:settle(2) }
+	end)
+	sched:advance(60)
+	a.gate = nil
+	assert(#sched.sleeping == 0, "a thread is still parked after the race")
+	assert(parked >= 1, "the first settle never reached a listing write, so nothing was in flight")
+	local quiet, quietWhy = w:quiesce()
+	local conserved, conservedWhy = false, quietWhy
+	if quiet then
+		conserved, conservedWhy = w:check()
+	end
+	return {
+		w = w,
+		log = {},
+		id = id,
+		quiet = quiet,
+		quietWhy = quietWhy,
+		conserved = conserved,
+		conservedWhy = conservedWhy,
+	},
+		answers
+end
+
+table.insert(specs, {
+	name = "race: two settles for one user on one server: the second is turned away and the refund is paid once",
+	run = function()
+		local r, answers = sameUserSettles(false)
+		ok(r)
+		assert(answers[1][1] ~= nil, "the first settle should run")
+		assert(
+			answers[2][1] == nil and answers[2][2] == "busy",
+			`the second settle was not turned away: {tostring(answers[2][1])} {tostring(answers[2][2])}`
+		)
+		assert(profile(r, 2).coins == 500 and profile(r, 2).items.fleece == 4, "user 2 was not refunded once")
+		assert(profile(r, 3).coins == 470 and profile(r, 3).items.fleece == 5)
+	end,
+})
+
+table.insert(specs, {
+	name = "race control: with no per-user lock the same two settles refund user 2 twice and fail conservation",
+	run = function()
+		local r, answers = sameUserSettles(true)
+		assert(r.quiet, r.quietWhy)
+		assert(answers[2][1] ~= nil, "the second settle was turned away, so there was no lock to remove")
+		assert(
+			not r.conserved and string.find(r.conservedWhy or "", "^coins:") ~= nil,
+			tostring(r.conservedWhy)
+		)
+	end,
+})
+
+-- A server whose clock is ahead refuses a bid once its own time passes the end, even while the
+-- listing is still open in the store and another server's clock is behind the end. The bidder
+-- keeps every Coin, and the bid that was taken in time wins.
+table.insert(specs, {
+	name = "race: a server whose clock is ahead refuses a bid at the end and the bidder is not charged",
+	run = function()
+		local w = World.new()
+		local a = w:server("A")
+		local fast = w:server("F", { skew = 2 })
+		local id = assert(a.market:list(1, "fleece", 1, "auction", 20, 1))
+		w.clock:advance(3600 - 1) -- A is one second short of the end, F is one second past it
+		assert(a.market:bid(4, id, 25) == true)
+		local taken, why = fast.market:bid(3, id, 30)
+		assert(
+			taken == false and why == "ended",
+			`the fast server took the bid: {tostring(taken)} {tostring(why)}`
+		)
+		local quiet, quietWhy = w:quiesce()
+		assert(quiet, quietWhy)
+		local conserved, conservedWhy = w:check()
+		assert(conserved, conservedWhy)
+		-- Refused before anything was staked, so user 3 was never even saved.
+		assert(w.records["profile/3"] == nil, "user 3 was charged something")
+		assert(w.records["profile/4"].coins == 475 and w.records["profile/4"].items.fleece == 5)
+		assert(w.records["listing/" .. id].high.userId == 4)
+	end,
+})
+
 return specs
