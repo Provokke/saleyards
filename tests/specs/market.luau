@@ -252,7 +252,9 @@ return {
 			assert(ok == false and err == "too_low")
 			r.clock:advance(3601)
 			assert(r.market:settle(3) == 1 and p(r, 3).coins == 500)
-			assert(r.market:settle(2) == 1)
+			-- Each call settled only its own claim, so bidder 2 still holds the outbid first bid
+			-- and the winning one.
+			assert(r.market:settle(2) == 2)
 			assert(p(r, 2).coins == 470 and p(r, 2).items.fleece == 5 and count(p(r, 2).claims) == 0)
 			assert(r.market:settle(1) == 1)
 			assert(p(r, 1).coins == 500 - 5 + 27 and count(p(r, 1).claims) == 0)
@@ -518,6 +520,66 @@ return {
 			assert(entry().value.high == 20 and entry().sortKey == 20)
 			assert(r.market:bid(3, id, 25) == true)
 			assert(entry().value.high == 25 and entry().sortKey == 25, "the price sort follows the high bid")
+		end,
+	},
+	{
+		name = "cancel is refused before any store call unless the player holds the listing's claim",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			p(r, 2) -- load both profiles first
+			local reads = 0
+			r.faults.onRead = function()
+				reads += 1
+			end
+			local writes = r.faults.writes
+			local ok, err = r.market:cancel(2, id) -- a player with no claim on it
+			assert(ok == false and err == "not_yours", tostring(err))
+			ok, err = r.market:cancel(1, "made-up")
+			assert(ok == false and err == "not_yours", tostring(err))
+			assert(reads == 0 and r.faults.writes == writes, "no store call was made")
+			assert(r.records["listing/" .. id].state == "open", "the listing is untouched")
+			-- control: the seller holds the claim, and the same call goes through
+			assert(r.market:cancel(1, id) == true)
+			assert(r.faults.writes > writes, "the cancel wrote")
+		end,
+	},
+	{
+		name = "buy settles only the claim it made, so held claims cost no reads until a full settle",
+		run = function()
+			local r = rig()
+			for _ = 1, 3 do
+				local id = listed(r, "auction", 20)
+				assert(r.market:bid(2, id, 20) == true)
+			end
+			local fixed = listed(r, "fixed", 40)
+			assert(count(p(r, 2).claims) == 3, "three bid claims held")
+			local reads = 0
+			r.faults.onRead = function()
+				reads += 1
+			end
+			assert(r.market:buy(2, fixed, 40) == true)
+			assert(reads == 2, `{reads} reads: the pre-read and its own claim, none for the three held`)
+			assert(count(p(r, 2).claims) == 3, "the held claims are left to the poll")
+			-- control: a full settle reads each held claim
+			reads = 0
+			r.market:settle(2)
+			assert(reads == 3, `{reads} reads for three claims`)
+		end,
+	},
+	{
+		name = "a cancel settles only its own listing claim",
+		run = function()
+			local r = rig()
+			local a = listed(r, "fixed", 40)
+			local b = listed(r, "auction", 20)
+			local reads = 0
+			r.faults.onRead = function()
+				reads += 1
+			end
+			assert(r.market:cancel(1, a) == true)
+			assert(reads == 1, `{reads} reads`)
+			assert(p(r, 1).claims[b] ~= nil, "the other listing's claim is still held")
 		end,
 	},
 }

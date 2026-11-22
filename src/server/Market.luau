@@ -16,6 +16,9 @@
 --           goes back into the index and applies nothing.
 -- A failed P stops the operation and undoes the in-memory change. A failed or lost L never rolls
 -- back: the claim stays and settle resolves it. Listings are only written by Listing transforms.
+-- After list, buy, bid and cancel, only the claim that call touched is settled; the rest wait for
+-- the join settle and the poll, so one player cannot make the server read every claim they hold
+-- on every call.
 -- A per-user lock covers every public call and is released on every path.
 
 export type Claim = {
@@ -217,18 +220,21 @@ function Market.new(deps: Deps): Market
 		return outcome, listing, nil
 	end
 
-	-- Settles every claim of one user. The caller holds the lock. Returns how many were applied, the
+	-- Settles every claim of one user, or only the claim `only` names. The caller holds the lock.
+	-- Returns how many were applied, the
 	-- action each decided claim ended with (a claim with no entry is still held) and whether the
 	-- profile is saved (true when nothing needed saving).
-	local function settleClaims(userId: number): (number, { [string]: string }, boolean)
+	local function settleClaims(userId: number, only: string?): (number, { [string]: string }, boolean)
 		local actions: { [string]: string } = {}
 		local profile = profiles.get(userId)
 		if profile == nil then
 			return 0, actions, true
 		end
 		local ordered: { Claim } = {}
-		for _, claim in profile.claims do
-			table.insert(ordered, claim)
+		for id, claim in profile.claims do
+			if only == nil or id == only then
+				table.insert(ordered, claim)
+			end
 		end
 		table.sort(ordered, function(a: Claim, b: Claim)
 			if a.at ~= b.at then
@@ -395,7 +401,7 @@ function Market.new(deps: Deps): Market
 				return listingId, nil
 			end
 			-- Raised or refused: the claim stays and settlement decides from the listing key.
-			local _, actions = settleClaims(userId)
+			local _, actions = settleClaims(userId, listingId)
 			if actions[listingId] == "keep" then
 				return listingId, nil
 			end
@@ -475,7 +481,7 @@ function Market.new(deps: Deps): Market
 		if not wrote then
 			log("stake write failed for " .. claimId .. ": " .. tostring(writeErr))
 		end
-		local _, actions = settleClaims(userId)
+		local _, actions = settleClaims(userId, claimId)
 		return nil, refusal, claimId, actions
 	end
 
@@ -530,6 +536,16 @@ function Market.new(deps: Deps): Market
 
 	function self.cancel(_: Market, userId: number, listingId: string): (boolean?, string?)
 		return locked(userId, function()
+			-- Only a listing this player holds a claim on can be cancelled, decided from the
+			-- profile before any store call, so a made-up id costs nothing.
+			local profile = profiles.get(userId)
+			if profile == nil then
+				return nil, "no_profile"
+			end
+			local held = profile.claims[listingId]
+			if held == nil or held.kind ~= "listing" then
+				return false, "not_yours"
+			end
 			local refusal: string? = nil
 			local ok = pcall(function()
 				listings:UpdateAsync(keyOf(listingId), function(current: any)
@@ -539,7 +555,7 @@ function Market.new(deps: Deps): Market
 					return new
 				end)
 			end)
-			local _, actions = settleClaims(userId)
+			local _, actions = settleClaims(userId, listingId)
 			if actions[listingId] == "return_item" or (ok and refusal == nil) then
 				local removed, removeErr = pcall(function()
 					index:remove(listingId)
