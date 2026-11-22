@@ -232,7 +232,9 @@ return {
 			r.handlers:handle(1, "buy", "L1", 10)
 			assert(#r.calls == 0, "the inner call never reached the market")
 			assert(r.handlers.dropped == 1, `{r.handlers.dropped} dropped`)
-			assert(#r.syncs == 1, "only the first call syncs")
+			assert(#r.syncs == 2, "the first call syncs, and the dropped one is told busy")
+			assert(r.syncs[1].result.action == "cancel" and r.syncs[1].result.reason == "busy")
+			assert(r.syncs[2].result.ok == true and r.syncs[2].result.action == "buy")
 			assert(r.handlers:busy(1) == false, "released after")
 		end,
 	},
@@ -242,7 +244,11 @@ return {
 			local r = rig()
 			r.state.busy = true
 			r.handlers:handle(1, "cancel", "L1")
-			assert(r.handlers.dropped == 1 and #r.syncs == 0, "the market said busy")
+			assert(r.handlers.dropped == 1 and #r.syncs == 1, "the market said busy")
+			assert(
+				r.syncs[1].result.ok == false and r.syncs[1].result.reason == "busy",
+				"and the player is told"
+			)
 			r.handlers.deps.market.busy = function(): boolean
 				return true
 			end
@@ -251,6 +257,7 @@ return {
 			r.handlers:handle(1, "cancel", "L1")
 			assert(#r.calls == 1, "only the first reached the market")
 			assert(r.handlers.dropped == 2, "a locked market drops the call before it is made")
+			assert(#r.syncs == 2 and r.syncs[2].result.reason == "busy", "and says busy")
 		end,
 	},
 	{

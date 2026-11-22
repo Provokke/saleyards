@@ -21,7 +21,7 @@ return table.freeze({
 	MaxQty = 99, -- the most of one item in a single listing
 	ListingHours = table.freeze({ 1, 6, 24 }), -- the durations a seller may pick, in hours
 	MaxOpenClaims = 10, -- how many unfinished claims one profile may hold at once
-	SettleSeconds = 30, -- how long after a listing ends before it is settled
+	SettleSeconds = 30, -- how often players holding claims are settled
 	NoticeCap = 20, -- how many notices a profile keeps, the oldest are dropped
 	BrowsePageSize = 20, -- listings returned per page when browsing
 	Limits = table.freeze({

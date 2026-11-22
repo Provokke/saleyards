@@ -120,8 +120,14 @@ function Handlers.handle(self: Handlers, userId: number, action: any, a: any, b:
 			self.dropped += 1
 			return
 		end
-		if self:busy(userId) or not deps.allowed(userId) then
+		if not deps.allowed(userId) then
 			self.dropped += 1
+			return
+		end
+		if self:busy(userId) then
+			-- Another call, or the settle, holds this player's lock: say so rather than go quiet.
+			self.dropped += 1
+			deps.sync(userId, { action = action, ok = false, reason = "busy" })
 			return
 		end
 		self.running[userId] = true
@@ -135,6 +141,7 @@ function Handlers.handle(self: Handlers, userId: number, action: any, a: any, b:
 		end
 		if result == nil then
 			self.dropped += 1 -- Market was busy with something else for this player
+			deps.sync(userId, { action = action, ok = false, reason = "busy" })
 			return
 		end
 		deps.sync(userId, result)

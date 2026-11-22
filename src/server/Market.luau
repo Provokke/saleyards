@@ -220,10 +220,19 @@ function Market.new(deps: Deps): Market
 		return outcome, listing, nil
 	end
 
+	-- Takes a listing out of the browse cache, best effort.
+	local function dropFromIndex(listingId: string)
+		local removed, removeErr = pcall(function()
+			index:remove(listingId)
+		end)
+		if not removed then
+			log("index remove failed: " .. tostring(removeErr))
+		end
+	end
+
 	-- Settles every claim of one user, or only the claim `only` names. The caller holds the lock.
-	-- Returns how many were applied, the
-	-- action each decided claim ended with (a claim with no entry is still held) and whether the
-	-- profile is saved (true when nothing needed saving).
+	-- Returns how many were applied, the action each decided claim ended with (a claim with no entry
+	-- is still held) and whether the profile is saved (true when nothing needed saving).
 	local function settleClaims(userId: number, only: string?): (number, { [string]: string }, boolean)
 		local actions: { [string]: string } = {}
 		local profile = profiles.get(userId)
@@ -264,8 +273,16 @@ function Market.new(deps: Deps): Market
 				applyOutcome(profile, claim, outcome)
 				actions[claim.id] = outcome.action
 				applied += 1
-				if claim.kind == "listing" then
+				-- Only a listing that is the user's own is marked: a claim whose id points at
+				-- someone else's listing is applied, but that listing is not written.
+				if
+					claim.kind == "listing"
+					and (listing == nil or listing.seller == nil or listing.seller == userId)
+				then
 					table.insert(settledListings, claim.listingId)
+				end
+				if claim.kind == "buy" and outcome.action == "give_item" then
+					dropFromIndex(claim.listingId)
 				end
 			end
 		end
@@ -274,12 +291,7 @@ function Market.new(deps: Deps): Market
 			saved = saveProfile(userId, profile)
 			if saved then
 				for _, listingId in settledListings do
-					local removed, removeErr = pcall(function()
-						index:remove(listingId)
-					end)
-					if not removed then
-						log("index remove failed: " .. tostring(removeErr))
-					end
+					dropFromIndex(listingId)
 					local marked, err = pcall(function()
 						listings:UpdateAsync(keyOf(listingId), function(current: any)
 							local new = Listing.markSettled(current, "seller")
@@ -448,6 +460,9 @@ function Market.new(deps: Deps): Market
 		end
 		local _, preReason = transform(current, "pre-read")
 		if preReason ~= nil then
+			if preReason == "not_open" or preReason == "ended" then
+				dropFromIndex(listingId) -- a stale browse entry goes when it is found out
+			end
 			return false, preReason, nil, nil
 		end
 
@@ -557,12 +572,7 @@ function Market.new(deps: Deps): Market
 			end)
 			local _, actions = settleClaims(userId, listingId)
 			if actions[listingId] == "return_item" or (ok and refusal == nil) then
-				local removed, removeErr = pcall(function()
-					index:remove(listingId)
-				end)
-				if not removed then
-					log("index remove failed: " .. tostring(removeErr))
-				end
+				dropFromIndex(listingId)
 				return true, nil
 			end
 			return false, refusal or "not_cancelled"

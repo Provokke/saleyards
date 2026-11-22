@@ -367,8 +367,8 @@ return {
 			assert(#r.index:page("price", nil, 5).entries == 1)
 			assert(r.market:buy(2, sold, 40) == true)
 			assert(
-				#r.index:page("price", nil, 5).entries == 1,
-				"the sale alone does not apply the seller's claim"
+				#r.index:page("price", nil, 5).entries == 0,
+				"the sale takes it out of the cache without waiting for the seller"
 			)
 			assert(r.market:settle(1) == 1)
 			assert(#r.index:page("price", nil, 5).entries == 0)
@@ -580,6 +580,41 @@ return {
 			assert(r.market:cancel(1, a) == true)
 			assert(reads == 1, `{reads} reads`)
 			assert(p(r, 1).claims[b] ~= nil, "the other listing's claim is still held")
+		end,
+	},
+	{
+		name = "a claim whose id points at someone else's listing is returned and that listing is not written",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40) -- user 1's
+			local before = Deep.copy(r.records["listing/" .. id])
+			p(r, 3).claims[id] = {
+				kind = "listing",
+				listingId = id,
+				itemId = "hay_bale",
+				qty = 2,
+				amount = 40,
+				fee = 5,
+				id = id,
+				at = 1000,
+			}
+			assert(r.market:settle(3) == 1)
+			assert(count(p(r, 3).claims) == 0 and p(r, 3).items.hay_bale == 8, "returned to its holder")
+			assert(Deep.equal(r.records["listing/" .. id], before), "the other player's listing is unchanged")
+		end,
+	},
+	{
+		name = "a buy refused as not open takes the stale listing out of the browse cache",
+		run = function()
+			local r = rig()
+			local id = listed(r, "fixed", 40)
+			local open = Deep.copy(r.records["listing/" .. id])
+			assert(r.market:buy(2, id, 40) == true)
+			r.index:add(open) -- a stale entry, as another server's cache can still hold
+			assert(#r.index:page("price", nil, 5).entries == 1)
+			local done, reason = r.market:buy(3, id, 40)
+			assert(done == false and reason == "not_open", tostring(reason))
+			assert(#r.index:page("price", nil, 5).entries == 0, "found out, so dropped")
 		end,
 	},
 }
