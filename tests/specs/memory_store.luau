@@ -38,4 +38,18 @@ return {
 			assert(store.records.k.v == 3, "the transform sees the stored record")
 		end,
 	},
+	{
+		name = "GetAsync returns a copy of the stored value, or nil for a key never written",
+		run = function()
+			local store = MemoryStore.new()
+			assert(store:GetAsync("missing") == nil)
+			store:UpdateAsync("k", function()
+				return { coins = 1, nested = { n = 1 } }
+			end)
+			local read = store:GetAsync("k", { UseCache = false })
+			assert(read.coins == 1 and read.nested.n == 1)
+			read.nested.n = 99
+			assert(store:GetAsync("k").nested.n == 1, "editing the copy changes nothing")
+		end,
+	},
 }

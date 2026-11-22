@@ -21,6 +21,12 @@ function MemoryStore.new(): MemoryStore
 	return setmetatable({ records = {} }, MemoryStore)
 end
 
+-- Same contract as GlobalDataStore:GetAsync: a copy of the stored value, or nil. The options are
+-- accepted and ignored, as there is no cache to skip.
+function MemoryStore.GetAsync(self: MemoryStore, key: string, _options: any?): any
+	return deepCopy(self.records[key])
+end
+
 -- Same contract as GlobalDataStore:UpdateAsync: a nil result cancels the write.
 function MemoryStore.UpdateAsync(self: MemoryStore, key: string, transform: (any) -> any): any
 	local current = deepCopy(self.records[key])

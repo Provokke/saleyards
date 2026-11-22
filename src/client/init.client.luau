@@ -1,0 +1,3 @@
+--!strict
+-- Saleyards client entry. The market screen is not built yet: this placeholder keeps the project
+-- file valid. It will listen to Sync and send intent through Request and Browse.

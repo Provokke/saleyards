@@ -199,6 +199,36 @@ function Sessions.save(self: Sessions, userId: number)
 	end)
 end
 
+-- Saves one player's session now and waits for it. True only when the write landed. It goes
+-- through the session's own save, which runs one at a time with the autosave and the release of
+-- the same session, so the two never overlap and each writes the data as it is when it runs. A
+-- read-only, lost or released session is never written, so it answers false. A session that finds
+-- its lease gone is kicked, as with an autosave.
+function Sessions.saveNow(self: Sessions, userId: number): boolean
+	local session = self.live[userId]
+	if session == nil or session.lost or session.readOnly or session.released then
+		return false
+	end
+	local deps = self.deps
+	local ok, saved = pcall(function()
+		return session:save()
+	end)
+	if not ok then
+		deps.log(`save failed for {userId}: {tostring(saved)}`)
+		return false
+	end
+	if saved == true then
+		return true
+	end
+	if session.lost and self.live[userId] == session then
+		local player = deps.playerOf(userId)
+		if player ~= nil then
+			deps.kick(player, MESSAGES.lost)
+		end
+	end
+	return false
+end
+
 -- The autosave pass.
 function Sessions.saveAll(self: Sessions)
 	local ids = {}
