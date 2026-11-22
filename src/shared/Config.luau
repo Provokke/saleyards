@@ -27,9 +27,9 @@ return table.freeze({
 	Limits = table.freeze({
 		BurstPerPlayer = 6, -- remote calls a player can make in a burst
 		RefillPerSecond = 2, -- calls handed back to each player per second
-		-- Calls that touch the DataStore draw from a second, slower allowance. Roblox gives a server
-		-- about 60 + 10 x players writes a minute, so nine operations back a minute is roughly three
-		-- market calls sustained, which leaves room for autosaves.
+		-- Calls that touch the DataStore draw from a second, slower allowance. Roblox gives each server
+		-- a per-minute request budget that grows with its player count; nine operations back a minute
+		-- is roughly three market calls sustained per player, well inside it with room for autosaves.
 		StoreBurstPerPlayer = 12, -- store operations a player can spend in a burst
 		StoreOpsPerMinute = 9, -- store operations handed back to each player per minute
 		-- What each market call spends. A buy or a cancel makes about three UpdateAsync writes.
