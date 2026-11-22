@@ -116,8 +116,11 @@ local sessions: any
 local handlers: any
 local market: any
 
--- Demo data (Studio only, and only with the SaleyardsDemoSeed attribute on ServerStorage).
-local demoOn = RunService:IsStudio() and ServerStorage:GetAttribute("SaleyardsDemoSeed") == true
+-- Demo data: Studio only, the in-memory stores only (never pretend sellers in a real data store),
+-- and only with the SaleyardsDemoSeed attribute on ServerStorage.
+local demoOn = RunService:IsStudio()
+	and not useRealStore
+	and ServerStorage:GetAttribute("SaleyardsDemoSeed") == true
 local demoEnv = {
 	Listing = Listing,
 	items = { "hay_bale", "fleece", "horseshoe", "saddle", "milk_can", "wool_bale" },
