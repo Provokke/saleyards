@@ -1,0 +1,17 @@
+{
+	"name": "saleyards",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"Saleyards": { "$path": "src/shared" }
+		},
+		"ServerScriptService": {
+			"Saleyards": { "$path": "src/server" }
+		},
+		"StarterPlayer": {
+			"StarterPlayerScripts": {
+				"Saleyards": { "$path": "src/client" }
+			}
+		}
+	}
+}
