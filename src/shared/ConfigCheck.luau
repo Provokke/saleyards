@@ -128,6 +128,23 @@ function ConfigCheck.check(config: any): (boolean, string?)
 			return false, `Limits.{field} must be above 0`
 		end
 	end
+	for _, field in { "StoreBurstPerPlayer", "StoreOpsPerMinute" } do
+		if not isWhole(limits[field], 1) then
+			return false, `Limits.{field} must be a whole number of 1 or more`
+		end
+	end
+	local cost = limits.StoreCost
+	if type(cost) ~= "table" then
+		return false, "Limits.StoreCost must be a table"
+	end
+	for _, action in { "list", "buy", "bid", "cancel" } do
+		if not isWhole(cost[action], 1) then
+			return false, `Limits.StoreCost.{action} must be a whole number of 1 or more`
+		end
+		if cost[action] > limits.StoreBurstPerPlayer then
+			return false, `Limits.StoreCost.{action} must not exceed StoreBurstPerPlayer`
+		end
+	end
 
 	local items = config.Items
 	if type(items) ~= "table" then

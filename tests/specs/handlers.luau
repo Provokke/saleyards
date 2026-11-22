@@ -65,6 +65,14 @@ local function rig(burst: number?): Rig
 		limiter = RateLimiter.new(burst or 100, 1, function()
 			return clock:now()
 		end),
+		storeLimiter = RateLimiter.new(
+			Config.Limits.StoreBurstPerPlayer,
+			Config.Limits.StoreOpsPerMinute / 60,
+			function()
+				return clock:now()
+			end
+		),
+		storeCost = Config.Limits.StoreCost,
 		config = Config,
 		market = market,
 		index = {
@@ -282,6 +290,65 @@ return {
 			r.clock:advance(2)
 			r.handlers:handle(1, "cancel", "L1")
 			assert(#r.calls == 5, "refilled")
+		end,
+	},
+	{
+		name = "a list-then-cancel loop is held to the store allowance and the rest are told to slow down",
+		run = function()
+			local r = rig()
+			local burst, perMinute = Config.Limits.StoreBurstPerPlayer, Config.Limits.StoreOpsPerMinute
+			local cost = Config.Limits.StoreCost
+			local made, slow = 0, 0
+			for _ = 1, 60 do -- two calls a second for a minute
+				r.handlers:handle(1, "list", "saddle", 1, "fixed", 10, 6)
+				r.clock:advance(0.5)
+				r.handlers:handle(1, "cancel", "L1")
+				r.clock:advance(0.5)
+			end
+			for _, s in r.syncs do
+				if s.result ~= nil and s.result.reason == "slow_down" then
+					slow += 1
+					assert(s.result.ok == false)
+				end
+			end
+			made = #r.calls
+			assert(made <= (burst + perMinute) / cost.list, `{made} market calls`)
+			assert(made >= 4, `{made} market calls`)
+			assert(slow == 60 * 2 - made, `{slow} told to slow down`)
+			assert(r.handlers.dropped == slow, "and each is counted")
+		end,
+	},
+	{
+		name = "buy and bid with made-up ids are charged like any store call",
+		run = function()
+			local r = rig()
+			r.state.answer = "not_found"
+			for i = 1, 20 do
+				r.handlers:handle(1, if i % 2 == 0 then "buy" else "bid", "made-up-" .. i, 10)
+			end
+			local limit = Config.Limits.StoreBurstPerPlayer // Config.Limits.StoreCost.buy
+			assert(#r.calls == limit, `{#r.calls} reached the market`)
+			assert(r.syncs[#r.syncs].result.reason == "slow_down")
+			assert(r.handlers.dropped == 20 - limit)
+		end,
+	},
+	{
+		name = "browse is not charged to the store allowance",
+		run = function()
+			local r = rig()
+			for _ = 1, 50 do
+				r.handlers:handle(1, "cancel", "L1")
+				r.clock:advance(1)
+				assert(r.handlers:browse(1, "price") ~= nil)
+			end
+			local spent = r.handlers.deps.storeLimiter.buckets[1]
+			assert(spent ~= nil, "cancels were charged")
+			local fresh = rig()
+			for _ = 1, 100 do
+				assert(fresh.handlers:browse(1, "price") ~= nil)
+				fresh.clock:advance(1)
+			end
+			assert(fresh.handlers.deps.storeLimiter.buckets[1] == nil, "browse spent nothing")
 		end,
 	},
 	{

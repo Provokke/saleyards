@@ -123,6 +123,7 @@ end
 local REASONS: { [string]: string } = {
 	pending = "Sent. It will finish shortly",
 	busy = "Hold on, still working on your last request",
+	slow_down = "Too many market actions. Wait a moment and try again.",
 	cant_afford = "You can't afford that",
 	not_enough_items = "You don't have enough of that item",
 	too_low = "Someone has bid more. Raise your bid",

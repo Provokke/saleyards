@@ -215,6 +215,39 @@ return {
 		end,
 	},
 	{
+		name = "the store limits must be whole numbers and every store action costed",
+		run = function()
+			for _, field in { "StoreBurstPerPlayer", "StoreOpsPerMinute" } do
+				flagged(function(c)
+					c.Limits[field] = 0
+				end, field)
+				flagged(function(c)
+					c.Limits[field] = 2.5
+				end, field)
+				flagged(function(c)
+					c.Limits[field] = nil
+				end, field)
+			end
+			flagged(function(c)
+				c.Limits.StoreCost = nil
+			end, "StoreCost")
+			for _, action in { "list", "buy", "bid", "cancel" } do
+				flagged(function(c)
+					c.Limits.StoreCost[action] = nil
+				end, `StoreCost.{action}`)
+				flagged(function(c)
+					c.Limits.StoreCost[action] = 0
+				end, `StoreCost.{action}`)
+				flagged(function(c)
+					c.Limits.StoreCost[action] = 1.5
+				end, `StoreCost.{action}`)
+				flagged(function(c)
+					c.Limits.StoreCost[action] = c.Limits.StoreBurstPerPlayer + 1
+				end, `StoreCost.{action}`)
+			end
+		end,
+	},
+	{
 		name = "names and the other copied timings are checked",
 		run = function()
 			for _, field in { "DataStoreName", "ListingStoreName", "IndexByPrice", "IndexByEnding" } do

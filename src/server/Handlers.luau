@@ -10,6 +10,10 @@
 -- and logs nothing, as that is an ordinary answer: it goes to the player with the next Sync, which
 -- carries the real state.
 --
+-- Store budget: a call that touches the DataStore (list, buy, bid, cancel) also spends from a
+-- second, slower limiter by what it costs the store, so a loop of cheap-looking calls cannot use
+-- up the server's write budget. A call over it is answered with "slow_down". Browse is not charged.
+--
 -- Busy guard: a market call yields (it saves the profile and writes listings). While it does,
 -- any other call from that player is dropped, so one player's calls never interleave. The entry
 -- script also waits on `busy` before it releases a session on leave or shutdown.
@@ -27,6 +31,8 @@ export type Result = { action: string, ok: boolean, reason: string?, id: string?
 export type Deps = {
 	validate: any, -- the Validate module
 	limiter: any, -- a RateLimiter, keyed by UserId
+	storeLimiter: any, -- a second RateLimiter for calls that touch the DataStore, keyed by UserId
+	storeCost: { [string]: number }, -- what each action spends from storeLimiter
 	config: any, -- MinPrice, MaxPrice, MaxQty, ListingHours, BrowsePageSize
 	market: any, -- a Market
 	index: any, -- an Index, for Browse
@@ -128,6 +134,13 @@ function Handlers.handle(self: Handlers, userId: number, action: any, a: any, b:
 			-- Another call, or the settle, holds this player's lock: say so rather than go quiet.
 			self.dropped += 1
 			deps.sync(userId, { action = action, ok = false, reason = "busy" })
+			return
+		end
+		local cost = deps.storeCost[action]
+		if cost ~= nil and not deps.storeLimiter:take(userId, cost) then
+			-- Too many store operations lately: tell the player rather than go quiet.
+			self.dropped += 1
+			deps.sync(userId, { action = action, ok = false, reason = "slow_down" })
 			return
 		end
 		self.running[userId] = true

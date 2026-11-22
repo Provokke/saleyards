@@ -100,6 +100,7 @@ return {
 				{
 					"pending",
 					"busy",
+					"slow_down",
 					"cant_afford",
 					"not_enough_items",
 					"too_low",

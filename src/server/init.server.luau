@@ -294,6 +294,12 @@ market = Market.new({
 handlers = Handlers.new({
 	validate = Validate,
 	limiter = RateLimiter.new(Config.Limits.BurstPerPlayer, Config.Limits.RefillPerSecond, os.clock),
+	storeLimiter = RateLimiter.new(
+		Config.Limits.StoreBurstPerPlayer,
+		Config.Limits.StoreOpsPerMinute / 60,
+		os.clock
+	),
+	storeCost = Config.Limits.StoreCost,
 	config = Config,
 	market = market,
 	index = index,
@@ -332,6 +338,7 @@ end
 local function onPlayerRemoving(player: Player)
 	local userId = player.UserId
 	handlers.deps.limiter:forget(userId)
+	handlers.deps.storeLimiter:forget(userId)
 	lastNotice[userId] = nil
 	demoDone[userId] = nil
 	sessions:leave(userId)

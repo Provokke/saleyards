@@ -161,6 +161,83 @@ return {
 		end,
 	},
 	{
+		name = "a list-then-cancel loop is held to the store budget through the real script, and Coins conserve",
+		run = function()
+			local world = started()
+			world:join(1)
+			local limits = Config.Limits
+			local before = world.faults.writes
+			local reads = 0
+			world.faults.onRead = function()
+				reads += 1
+			end
+			local slow = 0
+			for _ = 1, 60 do
+				world:request(1, "list", "hay_bale", 1, "fixed", 10, 6)
+				local sync = world:lastSync(1)
+				local id = sync.result.id
+				if sync.result.reason == "slow_down" then
+					slow += 1
+				end
+				world.sched:advance(0.5)
+				world:request(1, "cancel", id or "none")
+				if world:lastSync(1).result.reason == "slow_down" then
+					slow += 1
+				end
+				world.sched:advance(0.5)
+			end
+			assert(slow > 0, "some calls were told to slow down")
+			local writes = world.faults.writes - before
+			local callsAllowed = (limits.StoreBurstPerPlayer + limits.StoreOpsPerMinute)
+				// limits.StoreCost.list
+			assert(120 - slow <= callsAllowed, `{120 - slow} market calls got through`)
+			assert(writes <= callsAllowed * 3, `{writes} UpdateAsync in a minute of looping`)
+			assert(reads <= callsAllowed, `{reads} GetAsync in a minute of looping`)
+			-- Conservation: every bale is in hand or in an open listing, and only fees left the purse.
+			world.sched:advance(Config.SettleSeconds * 3)
+			local sync = world:lastSync(1)
+			local listed = 0
+			for _, rec in world.records do
+				if type(rec) == "table" and rec.state == "open" then
+					listed += rec.qty
+				end
+			end
+			assert(sync.items.hay_bale + listed == 6, "no hay bale made or lost")
+			assert(
+				sync.coins <= 500 and sync.coins >= 500 - Config.ListingFee * callsAllowed,
+				`{sync.coins} coins`
+			)
+			assert(#world.errors == 0, world.errors[1])
+		end,
+	},
+	{
+		name = "buy with made-up ids is charged, and browse is not, through the real script",
+		run = function()
+			local world = started()
+			world:join(1)
+			local reads = 0
+			world.faults.onRead = function()
+				reads += 1
+			end
+			for i = 1, 60 do
+				world:request(1, "buy", "made-up-" .. i, 10)
+				world.sched:advance(0.5)
+			end
+			local allowed = Config.Limits.StoreBurstPerPlayer // Config.Limits.StoreCost.buy
+				+ math.ceil(Config.Limits.StoreOpsPerMinute * 0.5 / Config.Limits.StoreCost.buy)
+			assert(reads <= allowed, `{reads} GetAsync for made-up ids`)
+			assert(world:lastSync(1).result.reason == "slow_down")
+			local readsBefore = reads
+			for _ = 1, 40 do
+				assert(world:browse(1, "price") ~= nil)
+				world.sched:advance(1)
+			end
+			assert(reads == readsBefore, "browse reads no store")
+			world:request(1, "buy", "made-up-x", 10)
+			assert(world:lastSync(1).result.reason ~= "slow_down" or reads == readsBefore)
+		end,
+	},
+	{
 		name = "Sync carries only the notices since the last one",
 		run = function()
 			local world = started()
