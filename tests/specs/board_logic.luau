@@ -146,4 +146,15 @@ return {
 			assert(BoardLogic.resultText("buy", false, "pending") == BoardLogic.reasonText("pending"))
 		end,
 	},
+	{
+		name = "a browse row shows the high bid once an auction has one, and says which price it is",
+		run = function()
+			local amount, note = BoardLogic.rowPrice("auction", nil, 15, nil)
+			assert(amount == 15 and note == "start bid", `{amount} {note}`)
+			amount, note = BoardLogic.rowPrice("auction", nil, 15, 22)
+			assert(amount == 22 and note == "high bid", `{amount} {note}`)
+			amount, note = BoardLogic.rowPrice("fixed", 40, nil, nil)
+			assert(amount == 40 and note == "buy now", `{amount} {note}`)
+		end,
+	},
 }

@@ -49,6 +49,18 @@ function BoardLogic.coins(amount: number): string
 	return (if amount < 0 then "-" else "") .. grouped .. " Coins"
 end
 
+-- The price a browse row shows and the note under it. An auction shows its high bid once it has
+-- one, as of the read that cached the row, and its start bid until then.
+function BoardLogic.rowPrice(kind: string, price: number?, startBid: number?, high: number?): (number, string)
+	if kind ~= "auction" then
+		return price or 0, "buy now"
+	end
+	if high ~= nil then
+		return high, "high bid"
+	end
+	return startBid or 0, "start bid"
+end
+
 -- The least a new bid may be. `knownHigh` is a high bid this client has seen, if any: the first
 -- bid only has to meet the start bid, later ones must beat the high bid by the increment.
 function BoardLogic.minNextBid(startBid: number, knownHigh: number?, increment: number): number

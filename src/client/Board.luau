@@ -219,12 +219,11 @@ local function drawBrowse(self: Board)
 			sub ..= ", yours"
 		end
 		local row = baseRow(self, self.browseList, order, entry.itemId, entry.qty, sub)
-		local amount = if entry.kind == "auction" then entry.high or entry.startBid or 0 else entry.price or 0
+		local amount, note = logic.rowPrice(entry.kind, entry.price, entry.startBid, entry.high)
 		local price = bold(theme.label(row, logic.coins(amount), 15, theme.coin), theme)
 		price.Position = UDim2.fromOffset(238, 9)
 		price.Size = UDim2.fromOffset(130, 20)
-		local priceNote =
-			theme.label(row, if entry.kind == "auction" then "start bid" else "buy now", 12, theme.muted)
+		local priceNote = theme.label(row, note, 12, theme.muted)
 		priceNote.Position = UDim2.fromOffset(238, 31)
 		priceNote.Size = UDim2.fromOffset(130, 18)
 		timeLabel(self, row, entry.endsAt)
