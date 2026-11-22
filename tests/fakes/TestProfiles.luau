@@ -11,6 +11,7 @@ export type Profile = {
 	coins: number,
 	items: { [string]: number },
 	claims: { [string]: any },
+	notices: { any },
 }
 
 type Store = {
@@ -52,7 +53,7 @@ function TestProfiles.get(self: TestProfiles, userId: number): Profile
 	if stored ~= nil then
 		profile = Deep.copy(stored)
 	else
-		profile = { coins = self.startCoins, items = Deep.copy(self.startItems), claims = {} }
+		profile = { coins = self.startCoins, items = Deep.copy(self.startItems), claims = {}, notices = {} }
 	end
 	self.profiles[userId] = profile
 	return profile
