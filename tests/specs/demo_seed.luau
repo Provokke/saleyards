@@ -113,7 +113,7 @@ return {
 		end,
 	},
 	{
-		name = "the entry script seeds in Studio with the attribute, and not otherwise",
+		name = "the entry script seeds in Studio with the attribute and in-memory stores, and not otherwise",
 		run = function()
 			local function run(options: any): any
 				local world = FakeGame.new(options)
@@ -123,24 +123,25 @@ return {
 				world.sched:advance(1)
 				return world
 			end
-			local on = run({
-				studio = true,
-				attributes = { SaleyardsDemoSeed = true, SaleyardsUseDataStore = true },
-			})
-			assert(#listingKeys(on.records) == 8, `{#listingKeys(on.records)} listings`)
+			-- Seeded: the in-memory stores hold the listings, so the proof is what player 7 receives.
+			local on = run({ studio = true, attributes = { SaleyardsDemoSeed = true } })
 			local sync = on:lastSync(7)
 			assert(sync.coins == 500 + 108, `{sync.coins} coins: the first settle paid out`)
 			assert(#sync.notices == 1 and string.find(sync.notices[1].text, "108 Coins", 1, true))
 			assert(#sync.claims == 0)
 			assert(#on.errors == 0, on.errors[1])
-			local notStudio = run({
-				studio = false,
+			-- Never into a real data store, even in Studio with the seed attribute on.
+			local realStore = run({
+				studio = true,
 				attributes = { SaleyardsDemoSeed = true, SaleyardsUseDataStore = true },
 			})
+			assert(#listingKeys(realStore.records) == 0, "off with a real data store")
+			assert(realStore:lastSync(7).coins == 500)
+			local notStudio = run({ studio = false, attributes = { SaleyardsDemoSeed = true } })
 			assert(#listingKeys(notStudio.records) == 0, "off outside Studio")
 			assert(notStudio:lastSync(7).coins == 500)
-			local noAttribute = run({ studio = true, attributes = { SaleyardsUseDataStore = true } })
-			assert(#listingKeys(noAttribute.records) == 0, "off without the attribute")
+			local noAttribute = run({ studio = true })
+			assert(noAttribute:lastSync(7).coins == 500, "off without the attribute")
 		end,
 	},
 }
