@@ -70,21 +70,9 @@ function Listing.final(l: Listing, now: number): boolean
 	return l.state ~= "open" or now >= l.endsAt
 end
 
-function Listing.saleAmount(l: Listing): number?
-	if l.state == "sold" then
-		return l.price
-	end
-	-- An auction stays "open" in state; it is decided by time. The caller supplies no clock here,
-	-- so a high bid on a listing that is not open counts only when the state is final.
-	if l.state ~= "open" and l.high then
-		return l.high.amount
-	end
-	return nil
-end
-
--- A listing whose end time has passed is final whatever its state says, so the caller that knows
--- the time uses this form.
-function Listing.saleAmountAt(l: Listing, now: number): number?
+-- What the seller is owed before tax, or nil when nothing has sold. An auction stays "open" in state
+-- and is decided by time, so this takes the clock: a high bid counts once the listing is final.
+function Listing.saleAmount(l: Listing, now: number): number?
 	if l.state == "sold" then
 		return l.price
 	end
@@ -200,6 +188,9 @@ function Listing.bid(
 	end
 	if now >= current.endsAt then
 		return nil, "ended"
+	end
+	if not isWhole(amount, 1) then
+		return nil, "bad_amount"
 	end
 	if current.voided[bidId] then
 		return nil, "voided"
