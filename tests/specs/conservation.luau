@@ -39,6 +39,21 @@ end
 
 return {
 	{
+		-- A user who never saved still holds their start values; the negative control is that the
+		-- same user saved with one Coin less fails.
+		name = "a user with no saved profile counts as their start values",
+		run = function()
+			local coins = { [1] = 100, [2] = 100, [3] = 70 }
+			local items = { [1] = { wood = 3 }, [2] = {}, [3] = { wood = 1 } }
+			local ok, reason = Conservation.check(world(), coins, items, TAX, NOW)
+			assert(ok, reason)
+			local records = world()
+			records["profile/3"] = { coins = 69, items = { wood = 1 }, claims = {} }
+			local bad = Conservation.check(records, coins, items, TAX, NOW)
+			assert(not bad, "a saved profile one Coin short must fail")
+		end,
+	},
+	{
 		name = "a settled world with one sale of 40 (tax 4, fee 5) passes",
 		run = function()
 			local ok, reason = Conservation.check(world(), startCoins, startItems, TAX, NOW)

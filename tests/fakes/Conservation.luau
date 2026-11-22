@@ -25,6 +25,14 @@ function Conservation.check(
 		end
 	end
 
+	-- A user whose profile was never saved still holds exactly what they started with: nothing they
+	-- did reached the store. Count them as their start values rather than as missing.
+	for userId, coins in startCoins do
+		local key = PROFILE_PREFIX .. tostring(userId)
+		if profiles[key] == nil then
+			profiles[key] = { coins = coins, items = startItems[userId] or {}, claims = {} }
+		end
+	end
 	-- No claims left over.
 	local keys = {}
 	for key in profiles do
