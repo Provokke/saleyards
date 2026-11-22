@@ -10,6 +10,7 @@
 -- `hookNext` runs code between the read and the write (it may write the record itself, or
 -- yield the calling thread), which is how tests interleave two calls.
 local Deep = require("./Deep")
+local Faults = require("./Faults")
 
 local FakeDataStore = {}
 FakeDataStore.__index = FakeDataStore
@@ -107,6 +108,31 @@ function FakeDataStore.UpdateAsync(self: FakeDataStore, key: string, transform: 
 		end
 		-- The record changed under us (or a re-run was forced): read it again and re-run.
 	end
+end
+
+export type Handle = {
+	UpdateAsync: (self: Handle, key: string, transform: (any) -> any) -> any,
+	GetAsync: (self: Handle, key: string) -> any,
+}
+
+-- One simulated server's view of this store. Every UpdateAsync counts as a write on `faults`
+-- (a "stop" raises before the call reaches the store; a "lost" applies it and then raises) and
+-- every call raises CRASH once the server is dead. Handles built on one store share its records.
+function FakeDataStore.handle(self: FakeDataStore, faults: Faults.Faults): Handle
+	local handle = {}
+	function handle.UpdateAsync(_: any, key: string, transform: (any) -> any): any
+		local mode = faults:beforeWrite()
+		local result = self:UpdateAsync(key, transform)
+		if mode == "lost" then
+			Faults.lose()
+		end
+		return result
+	end
+	function handle.GetAsync(_: any, key: string): any
+		faults:beforeRead()
+		return Deep.copy(self.records[key])
+	end
+	return handle :: Handle
 end
 
 return FakeDataStore
