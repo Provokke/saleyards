@@ -26,7 +26,7 @@ type Result = {
 }
 
 local function run(race: Race, order: Order, settler: any?): Result
-	local w = World.new(1, if settler ~= nil then { settler = settler } else nil)
+	local w = World.new(if settler ~= nil then { settler = settler } else nil)
 	local a, b = w:server("A"), w:server("B")
 	local id = race.setup(a)
 	local sched = FakeScheduler.new(w.clock)

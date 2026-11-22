@@ -34,6 +34,13 @@ export type Opts = {
 	settler: any?,
 	-- Makes every profile save report success without writing (a broken write order).
 	skipProfileSave: boolean?,
+	-- Gives every handle Roblox's read cache for this many seconds (a stale read is then possible).
+	cacheSeconds: number?,
+	-- A deliberately wrong server that is right on a clean run: when a listing write raises, it
+	-- hands back the stake of the claim it was making, as if the write had not landed.
+	rollbackAfterRaise: boolean?,
+	-- Seconds added to this server's clock (negative for a server that runs behind).
+	skew: number?,
 }
 
 export type Server = {
@@ -43,6 +50,10 @@ export type Server = {
 	profiles: TestProfiles.TestProfiles,
 	index: any,
 	logs: { string },
+	-- Builds a second Market over this server's own profiles, index and handles but with its own
+	-- per-user lock: two calls for one user through the two Markets are what a Market with no
+	-- busy guard would let happen.
+	newMarket: () -> Market.Market,
 	-- Called with the key before each of this server's listing UpdateAsync calls (not counted as a
 	-- write). A spec uses it to run another server in the gap, or to park the calling thread.
 	gate: ((key: string) -> ())?,
@@ -50,7 +61,6 @@ export type Server = {
 
 export type World = typeof(setmetatable(
 	{} :: {
-		seed: number,
 		opts: Opts,
 		records: { [string]: any },
 		store: FakeDataStore.FakeDataStore,
@@ -67,11 +77,10 @@ export type World = typeof(setmetatable(
 local realSettler = Settle.new(Listing)
 World.realSettler = realSettler
 
-function World.new(seed: number, opts: Opts?): World
+function World.new(opts: Opts?): World
 	local records: { [string]: any } = {}
 	local clock = FakeClock.new(1000)
 	return setmetatable({
-		seed = seed,
 		opts = opts or {},
 		records = records,
 		store = FakeDataStore.new(records),
@@ -90,10 +99,14 @@ function World.server(self: World, name: string, opts: Opts?): Server
 	self.names[name] = true
 	local o: Opts = opts or self.opts
 	local faults = Faults.new()
-	local real = self.store:handle(faults)
 	local clock = self.clock
+	local real = self.store:handle(
+		faults,
+		if o.cacheSeconds ~= nil then { cacheSeconds = o.cacheSeconds, clock = clock } else nil
+	)
+	local skew = o.skew or 0
 	local now = function(): number
-		return clock:now()
+		return clock:now() + skew
 	end
 	local s = { name = name, faults = faults, logs = {}, gate = nil } :: any
 	local log = function(line: string)
@@ -105,7 +118,25 @@ function World.server(self: World, name: string, opts: Opts?): Server
 			if gate ~= nil and not faults.dead then
 				gate(key)
 			end
-			return real:UpdateAsync(key, transform)
+			if not o.rollbackAfterRaise then
+				return real:UpdateAsync(key, transform)
+			end
+			local ok, result = pcall(real.UpdateAsync, real, key, transform)
+			if ok then
+				return result
+			end
+			if not faults.dead then
+				for userId, profile in s.profiles.profiles do
+					local claim = profile.claims[string.sub(key, 9)]
+					if claim ~= nil and claim.kind == "listing" then
+						profile.items[claim.itemId] = (profile.items[claim.itemId] or 0) + claim.qty
+						profile.coins += claim.fee or 0
+						profile.claims[claim.id] = nil
+						s.profiles:save(userId)
+					end
+				end
+			end
+			error(result, 0)
 		end,
 		GetAsync = function(_: any, key: string, options: any?): any
 			return real:GetAsync(key, options)
@@ -114,30 +145,36 @@ function World.server(self: World, name: string, opts: Opts?): Server
 	s.profiles = TestProfiles.new(real, Config.StartingCoins, Config.StartingItems)
 	s.index = Index.new(self.byPrice:handle(faults), self.byEnding:handle(faults), now, log)
 	local counter = 0
-	s.market = Market.new({
-		listings = listings,
-		index = s.index,
-		profiles = {
-			get = function(userId: number): any
-				return s.profiles:get(userId)
+	local function deps(): Market.Deps
+		return {
+			listings = listings,
+			index = s.index,
+			profiles = {
+				get = function(userId: number): any
+					return s.profiles:get(userId)
+				end,
+				save = function(userId: number): boolean
+					if o.skipProfileSave then
+						return true
+					end
+					return s.profiles:save(userId)
+				end,
+			},
+			now = now,
+			guid = function(): string
+				counter += 1
+				return name .. counter
 			end,
-			save = function(userId: number): boolean
-				if o.skipProfileSave then
-					return true
-				end
-				return s.profiles:save(userId)
-			end,
-		},
-		now = now,
-		guid = function(): string
-			counter += 1
-			return name .. counter
-		end,
-		log = log,
-		config = Config,
-		Listing = Listing,
-		settler = o.settler or realSettler,
-	})
+			log = log,
+			config = Config,
+			Listing = Listing,
+			settler = o.settler or realSettler,
+		}
+	end
+	s.market = Market.new(deps())
+	s.newMarket = function(): Market.Market
+		return Market.new(deps())
+	end
 	table.insert(self.servers, s :: Server)
 	return s :: Server
 end

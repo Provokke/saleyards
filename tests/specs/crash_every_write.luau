@@ -6,6 +6,7 @@
 -- items. A failure names the scenario, k and the mode.
 local process = require("@lune/process")
 
+local Faults = require("../fakes/Faults")
 local World = require("../harness/World")
 
 local HOUR = 3600
@@ -201,24 +202,71 @@ local scenarios: { Scenario } = {
 			)
 		end,
 	},
+	{
+		-- The seller is paid on A for a fixed sale: pay on a sold listing, then markSettled and the
+		-- index removes, all of them writes of the live server.
+		name = "list, buy, seller settles on A (fixed sale payout)",
+		run = function(_, a, step)
+			local id: string? = nil
+			step(function()
+				id = a.market:list(1, "hay_bale", 2, "fixed", 40, 1)
+			end)
+			step(function()
+				if id ~= nil then
+					a.market:buy(2, id, 40)
+				end
+			end)
+			step(function()
+				a.market:settle(1)
+			end)
+		end,
+		expect = function(r)
+			return first(
+				expectProfile(r, 1, 531, { hay_bale = 4 }),
+				expectProfile(r, 2, 460, { hay_bale = 8 })
+			)
+		end,
+	},
 }
 
-type Failure = { k: number, mode: string, why: string }
+type Failure = { k: number, k2: number?, mode: string, why: string }
 type Walk = { name: string, n: number, runs: number, failures: { Failure } }
+type Run = {
+	writes: number, -- the number of writes A made
+	world: World.World,
+	quiet: boolean, -- a fresh server settled until quiet
+	conserved: boolean, -- the store's records conserve Coins and items
+	why: string?, -- the reason when it is not quiet or does not conserve
+}
 
--- Runs one scenario on a fresh world, arming server A at write k in `mode` (or not at all when k
--- is nil). Returns the number of writes A made, the world, and the result of the conservation
--- check after a restart and quiesce.
-local function play(
-	sc: Scenario,
-	opts: World.Opts?,
-	k: number?,
-	mode: string?
-): (number, World.World, boolean, string?)
-	local w = World.new(1, opts)
+-- stop: A dies before write k lands. lost: write k lands and then raises. fail: write k raises
+-- before it lands and A carries on, so the paths a live server takes after a failed request run.
+local MODES: { Faults.Mode } = { "stop", "lost", "fail" }
+
+local function merge(base: World.Opts?, extra: World.Opts): World.Opts
+	local out: World.Opts = {}
+	for key, value in (base or {}) :: any do
+		(out :: any)[key] = value
+	end
+	for key, value in extra :: any do
+		(out :: any)[key] = value
+	end
+	return out
+end
+
+-- Runs one scenario on a fresh world. `k` arms server A at its k-th write in `mode`; `k2` (with
+-- mode "lost") also loses A's k2-th write. Fails when an armed fault never fired (the run would
+-- be a clean one in disguise). Then every server is restarted, a fresh server settles until quiet
+-- and the store's records are checked.
+local function play(sc: Scenario, opts: World.Opts?, k: number?, mode: Faults.Mode?, k2: number?): Run
+	local w = World.new(opts)
 	local a = w:server("A")
 	if k ~= nil and mode ~= nil then
-		a.faults:arm(k, mode :: any)
+		if k2 ~= nil then
+			a.faults:armPair(k, k2)
+		else
+			a.faults:arm(k, mode)
+		end
 	end
 	local crashed = false
 	local function step(fn: () -> ())
@@ -235,71 +283,164 @@ local function play(
 		end
 	end
 	sc.run(w, a, step)
+	if k ~= nil then
+		assert(
+			a.faults.target == nil,
+			`armed write {k} ({mode}) never fired, A made {a.faults.writes} writes`
+		)
+		if mode == "stop" then
+			assert(a.faults.dead, "a stop did not kill A")
+		end
+	end
 	local writes = a.faults.writes
 	local quiet, why = w:quiesce()
 	if not quiet then
-		return writes, w, false, why
+		return { writes = writes, world = w, quiet = false, conserved = false, why = why }
 	end
 	local conserved, reason = w:check()
-	return writes, w, conserved, reason
+	return { writes = writes, world = w, quiet = true, conserved = conserved, why = reason }
 end
 
-local function walk(sc: Scenario, opts: World.Opts?): Walk
-	local n, cleanWorld, cleanOk, cleanWhy = play(sc, opts, nil, nil)
-	local out: Walk = { name = sc.name, n = n, runs = 0, failures = {} }
-	if not cleanOk then
-		table.insert(out.failures, { k = 0, mode = "clean", why = tostring(cleanWhy) })
+-- The clean run first (k = 0), then `armed` is given the write count and a function that makes
+-- one armed run, and decides which runs to make.
+local function walkWith(
+	sc: Scenario,
+	opts: World.Opts?,
+	armed: (n: number, run: (k: number, mode: Faults.Mode, k2: number?) -> ()) -> ()
+): Walk
+	local clean = play(sc, opts, nil, nil)
+	local out: Walk = { name = sc.name, n = clean.writes, runs = 0, failures = {} }
+	if not clean.conserved then
+		table.insert(out.failures, { k = 0, mode = "clean", why = tostring(clean.why) })
 	elseif sc.expect ~= nil then
-		local bad = sc.expect(cleanWorld.records)
+		local bad = sc.expect(clean.world.records)
 		if bad ~= nil then
 			table.insert(out.failures, { k = 0, mode = "clean", why = "unexpected end state: " .. bad })
 		end
 	end
-	for k = 1, n do
-		for _, mode in { "stop", "lost" } do
-			out.runs += 1
-			local ran, _, conserved, why = pcall(play, sc, opts, k, mode)
-			if not ran then
-				table.insert(out.failures, { k = k, mode = mode, why = tostring(_) })
-			elseif not conserved then
-				table.insert(out.failures, { k = k, mode = mode, why = tostring(why) })
+	armed(clean.writes, function(k: number, mode: Faults.Mode, k2: number?)
+		out.runs += 1
+		local ran, result = pcall(play, sc, opts, k, mode, k2)
+		if not ran then
+			table.insert(out.failures, { k = k, k2 = k2, mode = mode, why = tostring(result) })
+		else
+			local finished = result :: Run
+			if not finished.conserved then
+				table.insert(out.failures, { k = k, k2 = k2, mode = mode, why = tostring(finished.why) })
 			end
 		end
-	end
+	end)
 	if verbose then
-		print(`crash walk: {sc.name}: n={n}, runs={out.runs}, failures={#out.failures}`)
+		print(`crash walk: {sc.name}: n={clean.writes}, runs={out.runs}, failures={#out.failures}`)
 	end
 	return out
+end
+
+-- Every write k in 1..n in every mode.
+local function walk(sc: Scenario, opts: World.Opts?): Walk
+	return walkWith(sc, opts, function(n, run)
+		for k = 1, n do
+			for _, mode in MODES do
+				run(k, mode, nil)
+			end
+		end
+	end)
+end
+
+-- Every pair of lost writes k1 < k2. A lost write that is then read back through a stale cache is
+-- what hides a write that landed; losing the next write too is what a settler that trusts a
+-- failed void falls for.
+local function walkPairs(sc: Scenario, opts: World.Opts?): Walk
+	return walkWith(sc, opts, function(n, run)
+		for k1 = 1, n - 1 do
+			for k2 = k1 + 1, n do
+				run(k1, "lost", k2)
+			end
+		end
+	end)
 end
 
 local function describe(w: Walk): string
 	local lines: { string } = {}
 	for _, f in w.failures do
-		table.insert(lines, `{w.name} k={f.k} mode={f.mode}: {f.why}`)
+		local at = if f.k2 ~= nil then `{f.k},{f.k2}` else tostring(f.k)
+		table.insert(lines, `{w.name} k={at} mode={f.mode}: {f.why}`)
 	end
 	return table.concat(lines, "\n")
 end
 
+-- True when the walk failed at write k in `mode` with a reason that starts with `pattern`.
+local function failedAt(w: Walk, k: number, mode: string, pattern: string, k2: number?): boolean
+	for _, f in w.failures do
+		if f.k == k and f.mode == mode and f.k2 == k2 and string.find(f.why, pattern) ~= nil then
+			return true
+		end
+	end
+	return false
+end
+
+-- A control has to fail at a real crash point: a failure of the clean run (k = 0) proves nothing
+-- about the walk.
+local function failsAfterCrash(w: Walk): boolean
+	for _, f in w.failures do
+		if f.k >= 1 then
+			return true
+		end
+	end
+	return false
+end
+
+local function cleanRunPassed(w: Walk): boolean
+	for _, f in w.failures do
+		if f.k == 0 then
+			return false
+		end
+	end
+	return true
+end
+
+local function byName(prefix: string): Scenario
+	for _, sc in scenarios do
+		if string.sub(sc.name, 1, #prefix) == prefix then
+			return sc
+		end
+	end
+	error("no scenario starts with " .. prefix)
+end
+
 local specs: { { name: string, run: () -> () } } = {}
+
+local CACHED: World.Opts = { cacheSeconds = 4 }
+local COINS_OR_ITEMS = "^[ci][to][ie][nm]s:" -- "coins:" or "items:"
+
+local function assertWalk(sc: Scenario, result: Walk)
+	assert(result.n >= 1, `{sc.name}: the clean run made no writes, so the walk would be empty`)
+	assert(
+		result.runs == #MODES * result.n,
+		`{sc.name}: walk ran {result.runs} times, expected {#MODES * result.n}`
+	)
+	assert(#result.failures == 0, describe(result))
+end
 
 for _, sc in scenarios do
 	table.insert(specs, {
 		name = "crash every write: " .. sc.name,
 		run = function()
-			local result = walk(sc, nil)
-			assert(result.n >= 1, `{sc.name}: the clean run made no writes, so the walk would be empty`)
-			assert(
-				result.runs == 2 * result.n,
-				`{sc.name}: walk ran {result.runs} times, expected {2 * result.n}`
-			)
-			assert(#result.failures == 0, describe(result))
+			assertWalk(sc, walk(sc, nil))
+		end,
+	})
+	-- Real GetAsync serves a cached read, so a write that landed unseen can leave a stale `open`.
+	table.insert(specs, {
+		name = "crash every write, read cache on: " .. sc.name,
+		run = function()
+			assertWalk(sc, walk(sc, CACHED))
 		end,
 	})
 	if sc.closes then
 		table.insert(specs, {
 			name = "crash every write: the clean run of '" .. sc.name .. "' writes a close",
 			run = function()
-				local w = World.new(1)
+				local w = World.new()
 				local a = w:server("A")
 				sc.run(w, a, function(fn: () -> ())
 					fn()
@@ -316,14 +457,100 @@ for _, sc in scenarios do
 	end
 end
 
--- Negative controls: the same walk must be able to fail.
+-- Two lost writes in one run, for the scenarios where a buy or bid has to be told apart from one
+-- that failed on our side.
+for _, prefix in { "list then buy", "list, buy,", "auction, two bids, ends, settle 1 2 3" } do
+	local sc = byName(prefix)
+	table.insert(specs, {
+		name = "crash every pair of lost writes, read cache on: " .. sc.name,
+		run = function()
+			local result = walkPairs(sc, CACHED)
+			assert(result.n >= 2)
+			assert(
+				result.runs == result.n * (result.n - 1) // 2,
+				`{sc.name}: pair walk ran {result.runs} times`
+			)
+			assert(#result.failures == 0, describe(result))
+		end,
+	})
+end
+
+-- Negative controls: the same walks must be able to fail, at a crash point and not only on the
+-- clean run.
+local real = World.realSettler
+
+-- Right on a clean run, wrong only after a raise.
+table.insert(specs, {
+	name = "crash control: a server that rolls the stake back after a raised listing write fails the walk",
+	run = function()
+		for _, sc in scenarios do
+			local result = walk(sc, { rollbackAfterRaise = true })
+			assert(cleanRunPassed(result), `{sc.name}: the control must be right on a clean run`)
+			assert(failsAfterCrash(result), `{sc.name}: the control never failed at a crash point`)
+			-- Write 2 is the create (the stake's save is 1): it lands, then raises, and is rolled back.
+			assert(
+				failedAt(result, 2, "lost", COINS_OR_ITEMS),
+				`{sc.name}: no money failure at k=2 lost\n{describe(result)}`
+			)
+		end
+	end,
+})
+
+local refundNoVoid: any = {
+	decide = function(claim: any, listing: any, now: number, saleTax: number, userId: number): any
+		local out = real.decide(claim, listing, now, saleTax, userId)
+		if out.action == "void_then_decide" and claim.kind ~= "listing" then
+			return { action = "refund", coins = claim.amount }
+		end
+		return out
+	end,
+	needsClose = real.needsClose,
+}
+
+table.insert(specs, {
+	name = "crash control: a settler that refunds without voiding first fails when a write landed unseen",
+	run = function()
+		local opts = merge(CACHED, { settler = refundNoVoid })
+		-- The buy lands but its response is lost; the stake's settle reads the cached `open`.
+		local buy = walk(byName("list then buy"), opts)
+		assert(cleanRunPassed(buy), describe(buy))
+		assert(failedAt(buy, 6, "lost", COINS_OR_ITEMS), describe(buy))
+		local seller = walk(byName("list, buy,"), opts)
+		assert(cleanRunPassed(seller), describe(seller))
+		assert(failedAt(seller, 6, "lost", COINS_OR_ITEMS), describe(seller))
+		-- The winning bid is refunded.
+		for _, prefix in { "auction, two bids, ends, settle 1 2 3", "auction, two bids, ends, settle 3 2 1" } do
+			local auctionWalk = walk(byName(prefix), opts)
+			assert(cleanRunPassed(auctionWalk), describe(auctionWalk))
+			assert(failedAt(auctionWalk, 8, "lost", COINS_OR_ITEMS), describe(auctionWalk))
+		end
+		-- Without the cache the lost write is read back and the control passes: the cache is what
+		-- lets the walk see a write that landed unseen.
+		local uncached = walk(byName("list then buy"), { settler = refundNoVoid })
+		assert(#uncached.failures == 0, describe(uncached))
+	end,
+})
+
+table.insert(specs, {
+	name = "crash control: a settler that refunds without voiding first fails the pair walk",
+	run = function()
+		local opts = merge(CACHED, { settler = refundNoVoid })
+		local buy = walkPairs(byName("list then buy"), opts)
+		assert(cleanRunPassed(buy), describe(buy))
+		assert(failedAt(buy, 6, "lost", COINS_OR_ITEMS, 7), describe(buy))
+		local auctionWalk = walkPairs(byName("auction, two bids, ends, settle 1 2 3"), opts)
+		assert(cleanRunPassed(auctionWalk), describe(auctionWalk))
+		assert(failedAt(auctionWalk, 8, "lost", COINS_OR_ITEMS, 9), describe(auctionWalk))
+	end,
+})
+
 table.insert(specs, {
 	name = "crash control: a hand-made extra Coin fails the conservation check",
 	run = function()
-		local _, w, ok, why = play(scenarios[2], nil, nil, nil)
-		assert(ok, why)
-		w.records["profile/2"].coins += 1
-		local after, reason = w:check()
+		local run = play(byName("list then buy"), nil, nil, nil)
+		assert(run.conserved, run.why)
+		run.world.records["profile/2"].coins += 1
+		local after, reason = run.world:check()
 		assert(not after and string.find(reason or "", "^coins:") ~= nil, tostring(reason))
 	end,
 })
@@ -331,10 +558,10 @@ table.insert(specs, {
 table.insert(specs, {
 	name = "crash control: a hand-made extra item fails the conservation check",
 	run = function()
-		local _, w, ok, why = play(scenarios[2], nil, nil, nil)
-		assert(ok, why)
-		w.records["profile/2"].items.fleece = (w.records["profile/2"].items.fleece or 0) + 1
-		local after, reason = w:check()
+		local run = play(byName("list then buy"), nil, nil, nil)
+		assert(run.conserved, run.why)
+		run.world.records["profile/2"].items.fleece = (run.world.records["profile/2"].items.fleece or 0) + 1
+		local after, reason = run.world:check()
 		assert(not after and string.find(reason or "", "^items:") ~= nil, tostring(reason))
 	end,
 })
@@ -342,7 +569,6 @@ table.insert(specs, {
 table.insert(specs, {
 	name = "crash control: a settler that gives a buy claim the item whatever the buyer fails the walk",
 	run = function()
-		local real = World.realSettler
 		local broken: any = {
 			decide = function(claim: any, listing: any, now: number, saleTax: number, userId: number): any
 				if claim.kind == "buy" and listing ~= nil and listing.state == "sold" then
@@ -352,15 +578,12 @@ table.insert(specs, {
 			end,
 			needsClose = real.needsClose,
 		}
-		local result = walk(scenarios[7], { settler = broken })
-		assert(result.n >= 1 and result.runs == 2 * result.n)
-		assert(#result.failures > 0, "the broken settler passed the walk, so the walk cannot fail")
+		local result = walk(byName("buy refused after the stake"), { settler = broken })
+		assert(result.n >= 1 and result.runs == #MODES * result.n)
+		assert(failsAfterCrash(result), describe(result))
 		local conservation = false
 		for _, f in result.failures do
-			if
-				string.find(f.why, "items:", 1, true) ~= nil
-				or string.find(f.why, "coins:", 1, true) ~= nil
-			then
+			if f.k >= 1 and string.find(f.why, COINS_OR_ITEMS) ~= nil then
 				conservation = true
 			end
 		end
@@ -369,11 +592,13 @@ table.insert(specs, {
 })
 
 table.insert(specs, {
-	name = "crash control: skipping the write-ahead profile save fails the walk",
+	name = "crash control: skipping the write-ahead profile save fails the walk after a crash",
 	run = function()
-		local result = walk(scenarios[1], { skipProfileSave = true })
-		assert(result.n >= 1 and result.runs == 2 * result.n)
-		assert(#result.failures > 0, "an unsaved stake passed the walk, so the walk cannot fail")
+		local result = walk(byName("list"), { skipProfileSave = true })
+		assert(result.n >= 1 and result.runs == #MODES * result.n)
+		assert(failsAfterCrash(result), describe(result))
+		-- The create lands with nothing saved behind it, then the response is lost.
+		assert(failedAt(result, 1, "lost", COINS_OR_ITEMS), describe(result))
 	end,
 })
 
@@ -381,7 +606,7 @@ table.insert(specs, {
 table.insert(specs, {
 	name = "crash harness: a restarted server's predecessor can no longer write",
 	run = function()
-		local w = World.new(1)
+		local w = World.new()
 		local a = w:server("A")
 		local id = a.market:list(1, "hay_bale", 2, "fixed", 40, 1)
 		assert(id == "A1")
@@ -402,7 +627,7 @@ table.insert(specs, {
 table.insert(specs, {
 	name = "crash harness: quiesce fails at the round bound, and a held claim fails the check",
 	run = function()
-		local w = World.new(1)
+		local w = World.new()
 		local a = w:server("A")
 		local id = a.market:list(1, "fleece", 1, "auction", 20, 1)
 		assert(id ~= nil)
@@ -419,7 +644,7 @@ table.insert(specs, {
 				return false
 			end,
 		}
-		local w2 = World.new(1, { settler = kept })
+		local w2 = World.new({ settler = kept })
 		local a2 = w2:server("A")
 		assert(a2.market:list(1, "hay_bale", 1, "fixed", 10, 1) ~= nil)
 		assert(w2:quiesce(), "a settler that keeps everything applies nothing, so it is quiet")
