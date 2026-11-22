@@ -56,6 +56,7 @@ export type Options = {
 	records: any?, -- an existing store to start over, as a restarted server would
 	studio: boolean?, -- RunService:IsStudio() answers this (default false)
 	attributes: { [string]: any }?, -- ServerStorage attributes
+	server: string?, -- names this server: its JobId and the prefix of its GUIDs, so two servers over one store differ
 }
 
 local function signal(world: any): any
@@ -139,7 +140,8 @@ function FakeGame.new(options: Options?): any
 	world.sched = FakeScheduler.new(world.clock)
 	world.ds = FakeDataStore.new(world.records)
 	world.maps = {} -- sorted maps by name
-	local dsHandle: any = world.ds:handle(Faults.new())
+	world.faults = Faults.new() -- the player and listing store's faults; a spec may hang its reads
+	local dsHandle: any = world.ds:handle(world.faults)
 	world.errors = {} -- errors thrown in spawned threads and signal handlers, which Roblox only logs
 
 	-- Runs fn(...) in a new thread on the scheduler, logging an error instead of raising it.
@@ -190,7 +192,7 @@ function FakeGame.new(options: Options?): any
 		HttpService = strict("HttpService", {
 			GenerateGUID = function()
 				world.guids += 1
-				return `guid-{world.guids}`
+				return `{opts.server or ""}guid-{world.guids}`
 			end,
 		}),
 		MemoryStoreService = strict("MemoryStoreService", {
@@ -240,7 +242,7 @@ function FakeGame.new(options: Options?): any
 
 	local env: any = {
 		game = strict("game", {
-			JobId = "JOB",
+			JobId = opts.server or "JOB",
 			GetService = function(_, name: string)
 				local service = services[name]
 				assert(service ~= nil, `FakeGame: service {name} is not modelled`)

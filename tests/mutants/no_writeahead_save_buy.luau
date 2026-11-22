@@ -3,8 +3,8 @@
 return {
 	name = "no_writeahead_save_buy",
 	file = "src/server/Market.luau",
-	find = [==[if not saveProfile(userId) then
+	find = [==[if not saveProfile(userId, profile) then
 			profile.coins += amount]==],
-	replace = [==[if false and not saveProfile(userId) then
+	replace = [==[if false and not saveProfile(userId, profile) then
 			profile.coins += amount]==],
 }

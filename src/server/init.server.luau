@@ -265,7 +265,14 @@ market = Market.new({
 			local session = sessions:writableSession(userId)
 			return if session ~= nil then session.data else nil
 		end,
-		save = function(userId: number): boolean
+		-- Saves only the profile the caller changed. If the player has left and come back since,
+		-- that table belongs to a dead session, so saving "their" session would write a different
+		-- profile than the one the caller staked into.
+		save = function(userId: number, staked: any): boolean
+			local session = sessions:writableSession(userId)
+			if session == nil or session.data ~= staked then
+				return false
+			end
 			return sessions:saveNow(userId)
 		end,
 	},

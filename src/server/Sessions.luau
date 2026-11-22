@@ -40,6 +40,7 @@ export type Sessions = typeof(setmetatable(
 ))
 
 local POLL_SECONDS = 0.25
+local RELEASE_RESERVE = 10 -- seconds of a shutdown limit kept for the release after the market wait
 
 local MESSAGES: { [string]: string } = {
 	locked = "Your data is still open on another server. Rejoin in a minute.",
@@ -86,7 +87,12 @@ local function releaseLater(self: Sessions, userId: number, session: any, waitLi
 	begin(self, userId)
 	self.deps.spawn(function()
 		local ok, err = pcall(function()
-			local waited = settle(self, userId, waitLimit or self.deps.closeSeconds)
+			-- Under a shutdown limit, keep part of it for the release itself, so a call that never
+			-- finishes cannot leave the release one late try.
+			local marketWait = if waitLimit ~= nil
+				then math.max(0, waitLimit - math.min(RELEASE_RESERVE, waitLimit / 2))
+				else self.deps.closeSeconds
+			local waited = settle(self, userId, marketWait)
 			session:release(if waitLimit ~= nil then math.max(0, waitLimit - waited) else nil)
 		end)
 		if not ok then

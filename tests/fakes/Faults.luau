@@ -19,12 +19,16 @@ export type Faults = typeof(setmetatable(
 		target: number?, -- the write number that is armed
 		mode: Mode,
 		also: { [number]: boolean }, -- further write numbers that land and then raise
+		onRead: (() -> ())?, -- runs at the start of every read, and may yield the calling thread
 	},
 	Faults
 ))
 
 function Faults.new(): Faults
-	return setmetatable({ writes = 0, dead = false, target = nil, mode = "stop" :: Mode, also = {} }, Faults)
+	return setmetatable(
+		{ writes = 0, dead = false, target = nil, mode = "stop" :: Mode, also = {}, onRead = nil },
+		Faults
+	)
 end
 
 -- Arms write number k, counted from this call (the next write is 1).
@@ -45,6 +49,9 @@ end
 
 -- Called at the start of every read. A dead server raises; a read is not a write.
 function Faults.beforeRead(self: Faults)
+	if self.onRead ~= nil then
+		self.onRead()
+	end
 	if self.dead then
 		error("CRASH")
 	end

@@ -44,7 +44,9 @@ export type StoreLike = {
 export type Deps = {
 	listings: StoreLike,
 	index: { add: (self: any, listing: any) -> (), remove: (self: any, id: string) -> () },
-	profiles: { get: (userId: number) -> Profile?, save: (userId: number) -> boolean },
+	-- save takes the profile the caller changed: a save for a profile that is no longer the player's
+	-- live one (they left and came back) must fail rather than write the new session.
+	profiles: { get: (userId: number) -> Profile?, save: (userId: number, profile: Profile) -> boolean },
 	now: () -> number,
 	guid: () -> string,
 	log: (string) -> (),
@@ -117,8 +119,8 @@ function Market.new(deps: Deps): Market
 	end
 
 	-- Saves the profile, treating a raise as a failed save.
-	local function saveProfile(userId: number): boolean
-		local ok, saved = pcall(profiles.save, userId)
+	local function saveProfile(userId: number, profile: Profile): boolean
+		local ok, saved = pcall(profiles.save, userId, profile)
 		return ok and saved == true
 	end
 
@@ -263,7 +265,7 @@ function Market.new(deps: Deps): Market
 		end
 		local saved = true
 		if applied > 0 then
-			saved = saveProfile(userId)
+			saved = saveProfile(userId, profile)
 			if saved then
 				for _, listingId in settledListings do
 					local removed, removeErr = pcall(function()
@@ -361,7 +363,7 @@ function Market.new(deps: Deps): Market
 			profile.items[itemId] = if have - qty > 0 then have - qty else nil
 			profile.coins -= fee
 			profile.claims[listingId] = claim
-			if not saveProfile(userId) then
+			if not saveProfile(userId, profile) then
 				profile.items[itemId] = (profile.items[itemId] or 0) + qty
 				profile.coins += fee
 				profile.claims[listingId] = nil
@@ -433,6 +435,11 @@ function Market.new(deps: Deps): Market
 		if not readOk then
 			return nil, "unavailable", nil, nil
 		end
+		-- The read yielded: the player may have left and come back, which makes `profile` a dead
+		-- session. Staking into it would take Coins from a table nobody saves.
+		if profiles.get(userId) ~= profile then
+			return nil, "no_profile", nil, nil
+		end
 		local _, preReason = transform(current, "pre-read")
 		if preReason ~= nil then
 			return false, preReason, nil, nil
@@ -450,7 +457,7 @@ function Market.new(deps: Deps): Market
 			id = claimId,
 			at = now(),
 		}
-		if not saveProfile(userId) then
+		if not saveProfile(userId, profile) then
 			profile.coins += amount
 			profile.claims[claimId] = nil
 			return nil, "save_failed", nil, nil
