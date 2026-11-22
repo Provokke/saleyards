@@ -1,9 +1,10 @@
 --!strict
 local Listing = require("../../src/server/Listing")
-local Settle = require("../../src/server/Settle")
+local SettleModule = require("../../src/server/Settle")
+local Settle = SettleModule.new(Listing)
 
 type Listing = Listing.Listing
-type Claim = Settle.Claim
+type Claim = SettleModule.Claim
 
 local TAX = 0.1
 local MIN = 5
@@ -92,7 +93,7 @@ local function bidClaim(id: string, amount: number): Claim
 	}
 end
 
-local function decide(c: Claim, l: Listing?, now: number): Settle.Outcome
+local function decide(c: Claim, l: Listing?, now: number): SettleModule.Outcome
 	return Settle.decide(c, l, now, TAX)
 end
 

@@ -2,10 +2,15 @@
 -- Pure settlement decision. Given what a player staked (a claim in their profile) and the shared
 -- listing record, say what to do next. It reads, never writes: Market.settle applies the outcome.
 
--- selene: allow(incorrect_standard_library_use)
-local Listing = require("./Listing")
+-- It takes the Listing module as an argument, like every leaf module here, so only the server
+-- script wires modules together. Listing values are typed loosely for the same reason.
+type Listing = any
 
-type Listing = Listing.Listing
+-- The two Listing functions a decision needs.
+export type ListingLib = {
+	final: (listing: any, now: number) -> boolean,
+	saleAmount: (listing: any, now: number) -> number?,
+}
 
 export type Claim = {
 	kind: "listing" | "buy" | "bid",
@@ -28,7 +33,7 @@ export type Outcome = {
 
 local Settle = {}
 
-local function decideListing(listing: Listing?, now: number, saleTax: number): Outcome
+local function decideListing(Listing: ListingLib, listing: Listing?, now: number, saleTax: number): Outcome
 	if listing == nil then
 		return { action = "void_then_decide" }
 	end
@@ -55,7 +60,7 @@ local function decideBuy(claim: Claim, listing: Listing?): Outcome
 	return { action = "refund", coins = claim.amount }
 end
 
-local function decideBid(claim: Claim, listing: Listing?, now: number): Outcome
+local function decideBid(Listing: ListingLib, claim: Claim, listing: Listing?, now: number): Outcome
 	if listing ~= nil then
 		local high = listing.high
 		if high ~= nil and high.bidId == claim.id then
@@ -71,13 +76,21 @@ local function decideBid(claim: Claim, listing: Listing?, now: number): Outcome
 	return { action = "refund", coins = claim.amount }
 end
 
-function Settle.decide(claim: Claim, listing: Listing?, now: number, saleTax: number): Outcome
-	if claim.kind == "listing" then
-		return decideListing(listing, now, saleTax)
-	elseif claim.kind == "buy" then
-		return decideBuy(claim, listing)
-	end
-	return decideBid(claim, listing, now)
+export type Settler = {
+	decide: (claim: Claim, listing: Listing?, now: number, saleTax: number) -> Outcome,
+}
+
+function Settle.new(Listing: ListingLib): Settler
+	return {
+		decide = function(claim: Claim, listing: Listing?, now: number, saleTax: number): Outcome
+			if claim.kind == "listing" then
+				return decideListing(Listing, listing, now, saleTax)
+			elseif claim.kind == "buy" then
+				return decideBuy(claim, listing)
+			end
+			return decideBid(Listing, claim, listing, now)
+		end,
+	}
 end
 
 return Settle
