@@ -4,13 +4,13 @@
 -- requires a failure. The working tree is never touched; the copies live in the temp directory.
 --
 --   lune run tests/mutate                      every mutant, full suite (the gate)
---   lune run tests/mutate -- --self-check      prove the runner reports a stale and a harmless mutant
+--   lune run tests/mutate -- --self-check      prove the runner reports a stale, a harmless and a broken mutant
 --   lune run tests/mutate -- name [name ...]   only the named mutants
 local fs = require("@lune/fs")
 local process = require("@lune/process")
 
 type Mutant = { name: string, file: string, find: string, replace: string }
-type Result = { name: string, status: "killed" | "survived" | "stale", detail: string }
+type Result = { name: string, status: "killed" | "survived" | "stale" | "broken", detail: string }
 
 local function tempRoot(): string
 	local base = process.env.TEMP or process.env.TMPDIR or "/tmp"
@@ -77,9 +77,10 @@ local function runOne(mutant: Mutant, dir: string): Result
 		end
 	end
 	if #failed == 0 then
-		-- Non-zero without a FAILED line: the mutant broke the build or the runner itself.
+		-- Non-zero without a FAILED line: the mutant broke the build or the runner itself. That
+		-- proves nothing about the specs, so it fails the run rather than counting as a kill.
 		local first = string.match(ran.stderr .. ran.stdout, "[^\r\n]+") or "no output"
-		return { name = mutant.name, status = "killed", detail = `(did not run: {first})` }
+		return { name = mutant.name, status = "broken", detail = `did not run: {first}` }
 	end
 	return { name = mutant.name, status = "killed", detail = table.concat(failed, ", ") }
 end
@@ -100,6 +101,8 @@ local function runAll(mutants: { Mutant }): { Result }
 				print(`KILLED {result.name} by {result.detail}`)
 			elseif result.status == "survived" then
 				print(`SURVIVED {result.name}`)
+			elseif result.status == "broken" then
+				print(`BROKEN {result.name}: {result.detail}`)
 			else
 				print(`STALE {result.name}: mutant {result.name} no longer applies ({result.detail})`)
 			end
@@ -128,9 +131,20 @@ local function selfCheck(): boolean
 		find = "this text is not in Settle.luau",
 		replace = "x",
 	}
-	local results = runAll({ harmless, stale })
-	local good = results[1].status == "survived" and results[2].status == "stale"
-	print(if good then "self-check ok: harmless SURVIVED, stale STALE" else "self-check FAILED")
+	-- A mutant that stops src from loading must not count as a kill.
+	local broken: Mutant = {
+		name = "selfcheck_broken",
+		file = "src/server/Settle.luau",
+		find = "local Settle = {}",
+		replace = "local Settle = {",
+	}
+	local results = runAll({ harmless, stale, broken })
+	local good = results[1].status == "survived"
+		and results[2].status == "stale"
+		and results[3].status == "broken"
+	print(
+		if good then "self-check ok: harmless SURVIVED, stale STALE, broken BROKEN" else "self-check FAILED"
+	)
 	return good
 end
 
@@ -163,7 +177,7 @@ for _, result in results do
 		bad += 1
 	end
 end
-print(`{killed} killed, {bad} survived or stale, {#results} mutants`)
+print(`{killed} killed, {bad} survived, stale or broken, {#results} mutants`)
 if bad > 0 then
 	process.exit(1)
 end
