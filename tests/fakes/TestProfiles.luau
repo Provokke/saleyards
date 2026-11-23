@@ -60,7 +60,8 @@ function TestProfiles.get(self: TestProfiles, userId: number): Profile
 end
 
 -- Writes the in-memory profile with UpdateAsync. False when the call raises, including a crash.
-function TestProfiles.save(self: TestProfiles, userId: number): boolean
+-- `undo` runs when the write fails, as the real session runs it inside its lock.
+function TestProfiles.save(self: TestProfiles, userId: number, undo: (() -> ())?): boolean
 	local profile = self.profiles[userId]
 	assert(profile ~= nil, "save of a profile that was never loaded")
 	local snapshot = Deep.copy(profile)
@@ -69,6 +70,9 @@ function TestProfiles.save(self: TestProfiles, userId: number): boolean
 			return Deep.copy(snapshot)
 		end)
 	end)
+	if not ok and undo ~= nil then
+		undo()
+	end
 	return ok
 end
 

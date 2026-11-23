@@ -153,11 +153,11 @@ function World.server(self: World, name: string, opts: Opts?): Server
 				get = function(userId: number): any
 					return s.profiles:get(userId)
 				end,
-				save = function(userId: number): boolean
+				save = function(userId: number, _: any, undo: (() -> ())?): boolean
 					if o.skipProfileSave then
 						return true
 					end
-					return s.profiles:save(userId)
+					return s.profiles:save(userId, undo)
 				end,
 			},
 			now = now,

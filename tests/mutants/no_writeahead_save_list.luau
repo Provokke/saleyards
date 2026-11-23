@@ -3,8 +3,8 @@
 return {
 	name = "no_writeahead_save_list",
 	file = "src/server/Market.luau",
-	find = [==[if not saveProfile(userId, profile) then
-				profile.items[itemId]]==],
-	replace = [==[if false and not saveProfile(userId, profile) then
-				profile.items[itemId]]==],
+	find = [==[if not saveProfile(userId, profile, undo) then
+				return nil, "save_failed"]==],
+	replace = [==[if false and not saveProfile(userId, profile, undo) then
+				return nil, "save_failed"]==],
 }

@@ -42,14 +42,17 @@ local function rig(settler: any?): any
 				end
 				return profiles:get(userId)
 			end,
-			save = function(userId: number): boolean
+			save = function(userId: number, _: any, undo: (() -> ())?): boolean
 				if r.onSave then
 					r.onSave()
 				end
 				if r.failSave then
+					if undo ~= nil then
+						undo()
+					end
 					return false
 				end
-				return profiles:save(userId)
+				return profiles:save(userId, undo)
 			end,
 		},
 		now = now,

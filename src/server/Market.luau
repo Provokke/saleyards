@@ -49,7 +49,10 @@ export type Deps = {
 	index: { add: (self: any, listing: any) -> (), remove: (self: any, id: string) -> () },
 	-- save takes the profile the caller changed: a save for a profile that is no longer the player's
 	-- live one (they left and came back) must fail rather than write the new session.
-	profiles: { get: (userId: number) -> Profile?, save: (userId: number, profile: Profile) -> boolean },
+	profiles: {
+		get: (userId: number) -> Profile?,
+		save: (userId: number, profile: Profile, undo: (() -> ())?) -> boolean,
+	},
 	now: () -> number,
 	guid: () -> string,
 	log: (string) -> (),
@@ -121,9 +124,10 @@ function Market.new(deps: Deps): Market
 		return a, b
 	end
 
-	-- Saves the profile, treating a raise as a failed save.
-	local function saveProfile(userId: number, profile: Profile): boolean
-		local ok, saved = pcall(profiles.save, userId, profile)
+	-- Saves the profile, treating a raise as a failed save. `undo` rolls the staked change back
+	-- inside the session's lock if the save fails, so no queued save stores it first.
+	local function saveProfile(userId: number, profile: Profile, undo: (() -> ())?): boolean
+		local ok, saved = pcall(profiles.save, userId, profile, undo)
 		return ok and saved == true
 	end
 
@@ -381,10 +385,12 @@ function Market.new(deps: Deps): Market
 			profile.items[itemId] = if have - qty > 0 then have - qty else nil
 			profile.coins -= fee
 			profile.claims[listingId] = claim
-			if not saveProfile(userId, profile) then
+			local function undo()
 				profile.items[itemId] = (profile.items[itemId] or 0) + qty
 				profile.coins += fee
 				profile.claims[listingId] = nil
+			end
+			if not saveProfile(userId, profile, undo) then
 				return nil, "save_failed"
 			end
 
@@ -478,9 +484,11 @@ function Market.new(deps: Deps): Market
 			id = claimId,
 			at = now(),
 		}
-		if not saveProfile(userId, profile) then
+		local function undo()
 			profile.coins += amount
 			profile.claims[claimId] = nil
+		end
+		if not saveProfile(userId, profile, undo) then
 			return nil, "save_failed", nil, nil
 		end
 

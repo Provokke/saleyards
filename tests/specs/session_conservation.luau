@@ -407,4 +407,53 @@ return {
 			assert(warned(world, "still running"))
 		end,
 	},
+	{
+		-- The stake's save parks for 70 s, so the 60 s autosave queues behind it; the save then fails.
+		-- The autosave must not run before the stake is rolled back, or it stores a stake the player
+		-- was told did not save.
+		name = "an autosave queued behind a failing list save does not store the stake before it is rolled back",
+		run = function()
+			local world = started()
+			world:join(1)
+			world.sched:advance(2)
+			world.ds:hookNext(function()
+				world.sched:wait(70)
+				error("the write failed")
+			end)
+			world:request(1, "list", "hay_bale", 1, "fixed", 50, 1)
+			world.sched:advance(71)
+			assert(world:lastSync(1).result.reason == "save_failed", "told it failed")
+			local data = stored(world, 1)
+			assert(data.coins == Config.StartingCoins, `the autosave stored the listing fee: {data.coins}`)
+			assert(data.items.hay_bale == 6 and count(data.claims) == 0, "the item and claim were stored")
+			assert(#world.errors == 0, world.errors[1])
+			world:leave(1)
+			world.sched:advance(5)
+			settledAndCounted(world)
+		end,
+	},
+	{
+		name = "an autosave queued behind a failing buy save does not store the stake before it is rolled back",
+		run = function()
+			local world = started()
+			local id = sellerLists(world)
+			world:join(1)
+			world.sched:advance(1)
+			world.ds:hookNext(function()
+				world.sched:wait(70)
+				error("the write failed")
+			end)
+			world:request(1, "buy", id, 50)
+			world.sched:advance(71)
+			assert(world:lastSync(1).result.reason == "save_failed", "told it failed")
+			local data = stored(world, 1)
+			assert(data.coins == Config.StartingCoins, `the autosave stored the buy's Coins: {data.coins}`)
+			assert(count(data.claims) == 0, "a claim was stored")
+			assert(world.records[listingKey(world)].state == "open", "the listing was not bought")
+			assert(#world.errors == 0, world.errors[1])
+			world:leave(1)
+			world.sched:advance(5)
+			settledAndCounted(world)
+		end,
+	},
 }

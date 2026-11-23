@@ -73,8 +73,8 @@ local function server(w: any, prefix: string, opts: Opts?): any
 			get = function(userId: number): any
 				return s.profiles:get(userId)
 			end,
-			save = function(userId: number): boolean
-				return s.profiles:save(userId)
+			save = function(userId: number, _: any, undo: (() -> ())?): boolean
+				return s.profiles:save(userId, undo)
 			end,
 		},
 		now = now,
