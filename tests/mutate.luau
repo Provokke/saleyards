@@ -49,6 +49,9 @@ local function runOne(mutant: Mutant, dir: string): Result
 	fs.writeDir(dir)
 	fs.copy("src", dir .. "/src")
 	fs.copy("tests", dir .. "/tests")
+	if fs.isFile("rokit.toml") then
+		fs.copy("rokit.toml", dir .. "/rokit.toml")
+	end
 	local path = dir .. "/" .. mutant.file
 	if not fs.isFile(path) then
 		return { name = mutant.name, status = "stale", detail = `{mutant.file} does not exist` }
